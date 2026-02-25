@@ -2,7 +2,7 @@
 
 Bu dokümanda projede kullanılan tüm matematiksel ve fiziksel formüller açıklanmaktadır.
 
----21313
+---
 
 ## 1. Haversine Formülü — İki Nokta Arası Mesafe
 
