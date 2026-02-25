@@ -3,16 +3,11 @@ import { useEffect, useRef } from 'react'
 const W = 560
 const H = 540
 
-const toRad = (d) => (d * Math.PI) / 180
-
 // Attitude Indicator geometry
-const AI_CX = 248          // centre x
-const AI_CY = 288          // centre y
 const AI_W  = 340          // width
 const AI_H  = 290          // height
-const AI_X  = AI_CX - AI_W / 2
-const AI_Y  = AI_CY - AI_H / 2
-const PITCH_PX = 28        // px per degree of pitch
+const AI_X  = 78           // left edge (AI_CX - AI_W/2)
+const AI_Y  = 143          // top edge  (AI_CY - AI_H/2)
 
 // Left box geometry (mirrors altitude tape)
 const LB_W   = 62
@@ -45,20 +40,79 @@ const DEFAULT = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-export function PrimaryFlightDisplay({ state, selAlt, selVs }) {
-  const canvasRef = useRef(null)
+const SQ_OFFSET = 250 * ALT_PX   // px distance to first ±250 ft line
 
+function targetSquareY(vs) {
+  return vs > 0 ? REF_CY - SQ_OFFSET
+       : vs < 0 ? REF_CY + SQ_OFFSET
+       :          REF_CY
+}
+
+export function PrimaryFlightDisplay({ state, selAlt, selVs }) {
+  const canvasRef  = useRef(null)
+  const stateRef   = useRef(state)
+  const selAltRef  = useRef(selAlt)
+  const selVsRef   = useRef(selVs)
+  const animRef    = useRef({ currentY: REF_CY, startY: REF_CY, targetY: REF_CY, startTime: null })
+  const rafRef     = useRef(null)
+
+  // Keep latest props accessible inside the RAF loop without re-subscribing
+  stateRef.current  = state
+  selAltRef.current = selAlt
+  selVsRef.current  = selVs
+
+  // Decide square target on every state update:
+  // – Return to base when ≤3 s remain to target alt (2 s anim + 1 s buffer)
+  // – Otherwise track vs direction
   useEffect(() => {
-    if (!canvasRef.current) return
-    const ctx = canvasRef.current.getContext('2d')
-    render(ctx, state ?? DEFAULT, selAlt, selVs)
-  }, [state, selAlt, selVs])
+    const vs       = state?.vs      ?? 0
+    const altitude = state?.altitude ?? 0
+    const target   = selAlt ?? state?.sel_alt ?? altitude
+
+    let newTarget
+    if (vs === 0) {
+      newTarget = REF_CY
+    } else {
+      const secsLeft = (Math.abs(altitude - target) / Math.abs(vs)) * 60
+      newTarget = secsLeft <= 3 ? REF_CY : targetSquareY(vs)
+    }
+
+    const anim = animRef.current
+    if (Math.abs(newTarget - anim.targetY) > 0.1) {
+      anim.startY    = anim.currentY
+      anim.targetY   = newTarget
+      anim.startTime = null
+    }
+  }, [state, selAlt])
+
+  // Continuous RAF render loop
+  useEffect(() => {
+    function loop(timestamp) {
+      const anim = animRef.current
+      if (Math.abs(anim.currentY - anim.targetY) > 0.1) {
+        if (anim.startTime === null) anim.startTime = timestamp
+        const t    = Math.min((timestamp - anim.startTime) / 2000, 1)
+        const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t   // ease-in-out
+        anim.currentY = anim.startY + (anim.targetY - anim.startY) * ease
+        if (t >= 1) anim.currentY = anim.targetY
+      }
+
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d')
+        render(ctx, stateRef.current ?? DEFAULT, selAltRef.current, selVsRef.current, anim.currentY)
+      }
+      rafRef.current = requestAnimationFrame(loop)
+    }
+
+    rafRef.current = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [])
 
   return <canvas ref={canvasRef} width={W} height={H} style={{ display: 'block' }} />
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-function render(ctx, s, selAlt, selVs) {
+function render(ctx, s, selAlt, selVs, squareY) {
   ctx.clearRect(0, 0, W, H)
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
@@ -66,7 +120,10 @@ function render(ctx, s, selAlt, selVs) {
   drawModeAnnunciators(ctx, s)
   drawAPStatus(ctx, s)
   drawLeftBox(ctx, s.actual_spd ?? s.tas ?? 300)
-  drawAttitudeIndicator(ctx, s.pitch ?? 2.5, s.roll ?? 0)
+  drawAttitudeIndicator(ctx)
+  drawCentreHorizonLine(ctx, squareY ?? REF_CY)
+  drawStaticRefLines(ctx)
+  drawHorizonArc(ctx)
   drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, selVs ?? s.vs ?? 0)
   drawHeadingTape(ctx, s.heading ?? 87)
   drawBaroIndicator(ctx, s.baro_std, s.baro_value)
@@ -133,170 +190,102 @@ function drawAPStatus(ctx, s) {
 }
 
 // ── Attitude Indicator ──────────────────────────────────────────────────────
-function drawAttitudeIndicator(ctx, pitch, roll) {
-  ctx.save()
+function drawAttitudeIndicator(ctx) {
+  const x1 = LB_X + LB_W   // right edge of speed box
+  const x2 = ALT_X          // left edge of altitude box
+  const w  = x2 - x1
+  const yMid = AI_Y + AI_H / 2
 
-  // Clip to rounded rectangle
-  ctx.beginPath()
-  roundRect(ctx, AI_X, AI_Y, AI_W, AI_H, 12)
-  ctx.clip()
-
-  // Move origin to AI centre
-  ctx.translate(AI_CX, AI_CY)
-
-  // Apply roll rotation (positive roll = right bank = clockwise in canvas)
-  ctx.rotate(toRad(roll))
-
-  // Apply pitch offset (pitch > 0 → horizon moves DOWN → more sky)
-  const pitchOffset = pitch * PITCH_PX
-  ctx.translate(0, pitchOffset)
-
-  // ── Sky ──
+  // Sky – blue upper half
   ctx.fillStyle = '#3A78C2'
-  ctx.fillRect(-W, -H * 2, W * 2, H * 2)
+  ctx.fillRect(x1, AI_Y, w, yMid - AI_Y)
 
-  // ── Earth ──
-  ctx.fillStyle = '#6B2530'
-  ctx.fillRect(-W, 0, W * 2, H * 2)
+  // Earth – light brown lower half down to heading tape
+  ctx.fillStyle = '#C4A060'
+  ctx.fillRect(x1, yMid, w, SPD_Y - yMid)
+}
 
-  // ── Horizon line ──
+// ── Centre horizon line + vertical cross ────────────────────────────────────
+function drawCentreHorizonLine(ctx, squareY) {
+  const y  = AI_Y + AI_H / 2         // vertical centre of the AI area
+  const x1 = LB_X + LB_W            // right edge of speed box
+  const x2 = ALT_X                   // left edge of altitude box
+  const xm = (x1 + x2) / 2          // midpoint of horizontal line
+
   ctx.strokeStyle = '#FFFFFF'
-  ctx.lineWidth = 2.5
+  ctx.lineWidth = 2
+
+  // Horizontal line
   ctx.beginPath()
-  ctx.moveTo(-W, 0)
-  ctx.lineTo(W, 0)
+  ctx.moveTo(x1, y)
+  ctx.lineTo(x2, y)
   ctx.stroke()
 
-  // ── Pitch ladder ──
-  for (let deg = -30; deg <= 30; deg += 5) {
-    if (deg === 0) continue
-    const y = -deg * PITCH_PX
-    const isMain = deg % 10 === 0
-    const halfLen = isMain ? 80 : 45
-    const absD = Math.abs(deg)
+  // Vertical line: from top of boxes down to the heading tape
+  ctx.beginPath()
+  ctx.moveTo(xm, AI_Y)
+  ctx.lineTo(xm, SPD_Y)
+  ctx.stroke()
 
-    ctx.strokeStyle = '#FFFFFF'
-    ctx.lineWidth = isMain ? 2 : 1.5
-    ctx.beginPath()
-    ctx.moveTo(-halfLen, y)
-    ctx.lineTo(halfLen, y)
-    ctx.stroke()
-
-    // End ticks (point toward horizon)
-    const tickDir = deg > 0 ? 8 : -8
-    ctx.beginPath()
-    ctx.moveTo(-halfLen, y)
-    ctx.lineTo(-halfLen, y + tickDir)
-    ctx.moveTo(halfLen, y)
-    ctx.lineTo(halfLen, y + tickDir)
-    ctx.stroke()
-
-    if (isMain) {
-      ctx.font = 'bold 12px monospace'
-      ctx.fillStyle = '#FFFFFF'
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(String(absD), -halfLen - 22, y)
-      ctx.fillText(String(absD), halfLen + 22, y)
-    }
-  }
-
-  ctx.restore()  // removes clip + transforms
-
-  // ── Aircraft reference symbol (fixed, not rotated) ──
-  drawAircraftRef(ctx)
-
-  // ── Roll indicator arc (fixed at top of AI) ──
-  drawRollIndicator(ctx, roll)
+  // Green square (animated y position)
+  const sq = 10
+  ctx.fillStyle = '#00FF00'
+  ctx.fillRect(xm - sq / 2, squareY - sq / 2, sq, sq)
 }
 
-function drawAircraftRef(ctx) {
-  ctx.save()
-  ctx.strokeStyle = '#FFD700'
-  ctx.lineWidth = 3
+// ── Static reference line grid ───────────────────────────────────────────────
+// Pixel positions fixed at initial conditions: alt=27000, hdg=87.
+// REF_CY is the centre y; ALT_PX converts ft offset to px.
+// REF_CX is the centre x; REF_PPD converts heading degrees to px.
+const REF_CY  = AI_Y + AI_H / 2          // 288
+const REF_CX  = AI_X + AI_W / 2          // 248
+const REF_PPD = (SPD_W / 2) / 30         // px per degree ≈ 5.667
 
-  // Left wing
-  ctx.beginPath()
-  ctx.moveTo(AI_CX - 55, AI_CY)
-  ctx.lineTo(AI_CX - 15, AI_CY)
-  ctx.stroke()
+function refY(alt)  { return REF_CY - (alt - 26000) * ALT_PX }
+function refX(hdg)  { return REF_CX + (hdg - 87)    * REF_PPD }
 
-  // Right wing
-  ctx.beginPath()
-  ctx.moveTo(AI_CX + 15, AI_CY)
-  ctx.lineTo(AI_CX + 55, AI_CY)
-  ctx.stroke()
+function drawStaticRefLines(ctx) {
+  ctx.strokeStyle = '#FFFFFF'
+  ctx.lineWidth = 2
 
-  // Centre dot
-  ctx.fillStyle = '#FFD700'
-  ctx.beginPath()
-  ctx.arc(AI_CX, AI_CY, 5, 0, Math.PI * 2)
-  ctx.fill()
-
-  // Body stub
-  ctx.strokeStyle = '#FFD700'
-  ctx.lineWidth = 3
-  ctx.beginPath()
-  ctx.moveTo(AI_CX, AI_CY - 6)
-  ctx.lineTo(AI_CX, AI_CY + 6)
-  ctx.stroke()
-
-  // Horizon reference brackets
-  ctx.lineWidth = 2.5
-  ctx.strokeStyle = '#FFD700'
-  // Left bracket ─┐
-  ctx.beginPath()
-  ctx.moveTo(AI_CX - 55, AI_CY)
-  ctx.lineTo(AI_CX - 55, AI_CY - 8)
-  ctx.stroke()
-  // Right bracket └─
-  ctx.beginPath()
-  ctx.moveTo(AI_CX + 55, AI_CY)
-  ctx.lineTo(AI_CX + 55, AI_CY - 8)
-  ctx.stroke()
-
-  ctx.restore()
-}
-
-function drawRollIndicator(ctx, roll) {
-  const cx = AI_CX
-  const cy = AI_Y + 6
-  const r  = 26
-
-  ctx.save()
-  ctx.translate(cx, cy + r)
-
-  // Scale arc (fixed)
-  ctx.strokeStyle = '#CCCCCC'
-  ctx.lineWidth = 1.5
-  ctx.beginPath()
-  ctx.arc(0, 0, r, toRad(210), toRad(330))
-  ctx.stroke()
-
-  const angles = [0, 10, 20, 30, 45, 60]
-  for (const a of angles) {
-    for (const sign of a === 0 ? [0] : [-1, 1]) {
-      const angleDeg = 270 + sign * a
-      const rad = toRad(angleDeg)
-      const len = a % 30 === 0 ? 8 : 5
-      ctx.beginPath()
-      ctx.moveTo(r * Math.cos(rad), r * Math.sin(rad))
-      ctx.lineTo((r - len) * Math.cos(rad), (r - len) * Math.sin(rad))
-      ctx.stroke()
-    }
+  // Long lines (hdg 080–094) at 27000, 26500, 25500, 25000
+  for (const alt of [27000, 26500, 25500, 25000]) {
+    ctx.beginPath()
+    ctx.moveTo(refX(80), refY(alt))
+    ctx.lineTo(refX(94), refY(alt))
+    ctx.stroke()
   }
 
-  // Roll pointer triangle (rotates with roll)
-  ctx.rotate(toRad(roll))
-  ctx.fillStyle = '#FFD700'
-  ctx.beginPath()
-  ctx.moveTo(0, -r + 2)
-  ctx.lineTo(-5, -r + 12)
-  ctx.lineTo(5, -r + 12)
-  ctx.closePath()
-  ctx.fill()
+  // Short lines (hdg 084–090) at 26750, 26250, 25750, 25250
+  for (const alt of [26750, 26250, 25750, 25250]) {
+    ctx.beginPath()
+    ctx.moveTo(refX(84), refY(alt))
+    ctx.lineTo(refX(90), refY(alt))
+    ctx.stroke()
+  }
+}
 
-  ctx.restore()
+// ── Horizon arc ─────────────────────────────────────────────────────────────
+// Static: endpoints at hdg 062 & 112 on the baseline, peak at alt 27250.
+// All pixel positions fixed at initial conditions (alt=27000, hdg=87).
+function drawHorizonArc(ctx) {
+  const arcCX = REF_CX                      // symmetric about hdg 87
+  const halfW = 25 * REF_PPD               // half of 50° span (hdg 062–112)
+  const yBase = REF_CY                      // baseline y (main horizontal line)
+  const yPeak = refY(27250)                 // fixed peak y
+
+  const h    = yBase - yPeak               // arc height (px)
+  const dy   = (halfW * halfW - h * h) / (2 * h)
+  const yCtr = yBase + dy
+  const R    = Math.sqrt(halfW * halfW + dy * dy)
+  const aStart = Math.atan2(yBase - yCtr, -halfW)
+  const aEnd   = Math.atan2(yBase - yCtr,  halfW)
+
+  ctx.strokeStyle = '#FFFFFF'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.arc(arcCX, yCtr, R, aEnd, aStart, true)
+  ctx.stroke()
 }
 
 // ── Altitude tape (right side) ──────────────────────────────────────────────

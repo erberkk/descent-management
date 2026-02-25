@@ -238,6 +238,9 @@ class Aircraft:
             direction = 1 if self.vs > 0 else -1
             self._leveloff_target = round((self.altitude + direction * 100) / 100) * 100
             self.fcu_sel_vs = 0.0
+            # Clear the override flag so the fcu_sel_vs:0 in the same patch
+            # does not immediately zero vs before _leveloff_target is reached
+            self._vs_managed_override = False
             # sel_alt stays unchanged — pilot keeps full control of target altitude
 
         # ── V/S knob ────────────────────────────────────────────────────────
@@ -250,6 +253,16 @@ class Aircraft:
                     self.vs = abs(self.fcu_sel_vs)
                 else:
                     self.vs = -abs(self.fcu_sel_vs)
+            elif self.vs == 0 and self.fcu_sel_vs != 0:
+                # Leveled off — resume if the dialled VS points toward sel_alt
+                alt_error = self.sel_alt - self.altitude
+                going_right_way = (self.fcu_sel_vs > 0 and alt_error > 50) or \
+                                  (self.fcu_sel_vs < 0 and alt_error < -50)
+                if going_right_way:
+                    self.vs = self.fcu_sel_vs
+                    self.fcu_vs_managed = False
+                    self.alt_mode = "CLB" if self.vs > 0 else "DES"
+                    self._vs_managed_override = True
 
         if "fcu_vs_managed" in patch:
             self.fcu_vs_managed = bool(patch["fcu_vs_managed"])
@@ -319,6 +332,7 @@ class Aircraft:
              (self.vs > 0 and self.altitude >= self.sel_alt):
             self.altitude = self.sel_alt
             self.vs       = 0.0
+            self.fcu_sel_vs = 0.0
             self.alt_mode = "ALT"
             self._vs_managed_override = False
             self.fcu_vs_managed = True
