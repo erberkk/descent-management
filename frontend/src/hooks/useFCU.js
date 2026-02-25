@@ -11,7 +11,7 @@ const DEFAULTS = {
   fcu_sel_hdg:      87,
   fcu_sel_vs:       0,
   fcu_vs_managed:   true,
-  fcu_sel_alt:      36000,
+  fcu_sel_alt:      27000,
   fcu_alt_step:     1000,
   metric_alt:       false,
   exped_active:     false,

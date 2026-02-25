@@ -14,12 +14,18 @@ const AI_X  = AI_CX - AI_W / 2
 const AI_Y  = AI_CY - AI_H / 2
 const PITCH_PX = 28        // px per degree of pitch
 
+// Left box geometry (mirrors altitude tape)
+const LB_W   = 62
+const LB_H   = 290   // = AI_H
+const LB_X   = 78 - LB_W - 12   // AI_X - LB_W - 12 (mirrors right gap)
+
 // Altitude tape geometry
 const ALT_X  = 430
 const ALT_Y  = AI_Y
 const ALT_W  = 62
 const ALT_H  = AI_H
-const ALT_PX = 6.4         // px per 100 ft (FL unit)
+const ALT_RANGE = 2000     // ft visible above and below centre
+const ALT_PX = (290 / 2) / ALT_RANGE  // px per ft  (= 0.0725)
 
 // Speed (Mach) tape geometry – horizontal at bottom
 const SPD_X  = AI_X
@@ -31,38 +37,38 @@ const SPD_PX_MACH = 280   // total tape width for Mach 0…1.2
 // Default state for initial render
 const DEFAULT = {
   pitch: 2.5, roll: 0,
-  altitude: 27000, sel_alt: 36000, vs: 0,
-  mach: 0.788, tas: 464, gs: 478,
+  altitude: 27000, sel_alt: 27000, vs: 0,
+  mach: 0.788, tas: 300, gs: 300,
   spd_mode: 'MACH', alt_mode: 'ALTCRZ', lat_mode: 'NAV',
   ap_num: 2, fd1: true, fd2: true, athr: true,
   baro_std: true, baro_value: 1013.25,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-export function PrimaryFlightDisplay({ state }) {
+export function PrimaryFlightDisplay({ state, selAlt, selVs }) {
   const canvasRef = useRef(null)
 
   useEffect(() => {
     if (!canvasRef.current) return
     const ctx = canvasRef.current.getContext('2d')
-    render(ctx, state ?? DEFAULT)
-  }, [state])
+    render(ctx, state ?? DEFAULT, selAlt, selVs)
+  }, [state, selAlt, selVs])
 
   return <canvas ref={canvasRef} width={W} height={H} style={{ display: 'block' }} />
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-function render(ctx, s) {
+function render(ctx, s, selAlt, selVs) {
   ctx.clearRect(0, 0, W, H)
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
 
   drawModeAnnunciators(ctx, s)
   drawAPStatus(ctx, s)
+  drawLeftBox(ctx, s.actual_spd ?? s.tas ?? 300)
   drawAttitudeIndicator(ctx, s.pitch ?? 2.5, s.roll ?? 0)
-  drawAltitudeTape(ctx, s.altitude ?? 27000, s.sel_alt ?? 36000, s.vs ?? 0)
-  drawMachTape(ctx, s.mach ?? 0.788)
-  drawMachReadout(ctx, s.mach ?? 0.788)
+  drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, selVs ?? s.vs ?? 0)
+  drawHeadingTape(ctx, s.heading ?? 87)
   drawBaroIndicator(ctx, s.baro_std, s.baro_value)
 }
 
@@ -297,6 +303,7 @@ function drawRollIndicator(ctx, roll) {
 function drawAltitudeTape(ctx, altitude, selAlt, vs) {
   const cx = ALT_X
   const cy = ALT_Y
+  const centreY = cy + ALT_H / 2
 
   // Background
   ctx.fillStyle = '#111'
@@ -311,58 +318,33 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
   ctx.rect(cx, cy, ALT_W, ALT_H)
   ctx.clip()
 
-  const altFL = altitude / 100  // convert to FL units (e.g. 270)
-  const centrY = cy + ALT_H / 2
+  // Snap grid to nearest 100ft and iterate ±2000ft
+  const firstAlt = Math.ceil((altitude - ALT_RANGE) / 100) * 100
+  const lastAlt  = Math.floor((altitude + ALT_RANGE) / 100) * 100
 
-  // Draw FL numbers every 20 (every 2000 ft)
-  const firstFL = Math.ceil((altFL - 30) / 20) * 20
-  for (let fl = firstFL; fl <= altFL + 30; fl += 20) {
-    const yPos = centrY - (fl - altFL) * ALT_PX
+  for (let a = firstAlt; a <= lastAlt; a += 100) {
+    const yPos = centreY - (a - altitude) * ALT_PX
+    const is500 = a % 500 === 0
 
-    // Tick
+    // Tick mark
     ctx.strokeStyle = '#888'
-    ctx.lineWidth = 1
+    ctx.lineWidth = is500 ? 1.5 : 1
     ctx.beginPath()
     ctx.moveTo(cx, yPos)
-    ctx.lineTo(cx + 10, yPos)
+    ctx.lineTo(cx + (is500 ? 12 : 7), yPos)
     ctx.stroke()
 
-    // Number
-    ctx.font = '13px monospace'
-    ctx.fillStyle = '#DDDDDD'
-    ctx.textAlign = 'left'
-    ctx.fillText(String(fl), cx + 12, yPos + 5)
+    // Label every 500 ft
+    if (is500) {
+      ctx.font = '11px monospace'
+      ctx.fillStyle = '#CCCCCC'
+      ctx.textAlign = 'left'
+      ctx.fillText(String(Math.round(a)), cx + 14, yPos + 4)
+    }
   }
 
-  // Red warning zone at top (high altitude caution)
-  const warnFL = altFL + 25
-  const warnY = centrY - (warnFL - altFL) * ALT_PX
-  ctx.fillStyle = 'rgba(200,0,0,0.5)'
-  ctx.fillRect(cx, cy, ALT_W, Math.max(0, warnY - cy))
-
-  ctx.restore()
-
-  // ── Current altitude pointer (box at centre) ──
-  const pY = cy + ALT_H / 2
-  ctx.fillStyle = '#222'
-  ctx.strokeStyle = '#FFD700'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  roundRect(ctx, cx - 2, pY - 14, ALT_W + 4, 28, 3)
-  ctx.fill()
-  ctx.stroke()
-
-  // Altitude readout
-  const altRound = Math.round(altitude / 20) * 20
-  const altStr = String(Math.round(altRound)).padStart(5, ' ')
-  ctx.font = 'bold 15px monospace'
-  ctx.fillStyle = '#FFFFFF'
-  ctx.textAlign = 'center'
-  ctx.fillText(altStr, cx + ALT_W / 2, pY + 5)
-
-  // ── Selected altitude bug ──
-  const selFL = selAlt / 100
-  const selY = cy + ALT_H / 2 - (selFL - altFL) * ALT_PX
+  // Selected altitude bug (blue chevron on left edge)
+  const selY = centreY - (selAlt - altitude) * ALT_PX
   if (selY >= cy && selY <= cy + ALT_H) {
     ctx.strokeStyle = '#00BFFF'
     ctx.lineWidth = 2
@@ -374,35 +356,86 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
     ctx.stroke()
   }
 
-  // ── Selected altitude readout (right of tape) ──
-  const selX = cx + ALT_W + 4
-  ctx.fillStyle = '#001A44'
-  ctx.strokeStyle = '#00BFFF'
+  ctx.restore()
+
+  // ── Current altitude pointer box (centre) ──
+  const pY = centreY
+  ctx.fillStyle = '#222'
+  ctx.strokeStyle = '#FFD700'
   ctx.lineWidth = 2
   ctx.beginPath()
-  roundRect(ctx, selX, cy + 4, 58, 54, 3)
+  roundRect(ctx, cx - 2, pY - 14, ALT_W + 4, 28, 3)
   ctx.fill()
   ctx.stroke()
 
-  ctx.font = 'bold 16px monospace'
-  ctx.fillStyle = '#00BFFF'
+  ctx.font = 'bold 14px monospace'
+  ctx.fillStyle = '#FFFFFF'
   ctx.textAlign = 'center'
-  const selFL_disp = Math.round(selAlt / 100)
-  ctx.fillText(String(selFL_disp), selX + 29, cy + 24)
-  ctx.font = '12px monospace'
-  ctx.fillStyle = '#00BFFF'
-  ctx.fillText('00', selX + 29, cy + 40)
-  ctx.fillText('20', selX + 29, cy + 54)
+  ctx.fillText(String(Math.round(altitude / 20) * 20).padStart(5, ' '), cx + ALT_W / 2, pY + 5)
 
-  // ── Speed/altitude limit markers ──
-  ctx.font = '11px monospace'
-  ctx.fillStyle = '#00BB00'
-  ctx.textAlign = 'left'
-  ctx.fillText(`>${Math.round(selFL + 15) * 10}`, selX, cy + 78)
-  ctx.fillText(`>${Math.round(selFL - 15) * 10}`, selX, cy + ALT_H - 6)
+  // ── Vertical speed indicator (outer right of altitude tape) ──
+  drawVSI(ctx, vs, cx + ALT_W + 4, cy)
+}
 
-  // ── Vertical speed indicator (mini strip right of altitude tape) ──
-  drawVSI(ctx, vs, selX + 62, cy)
+// ── Left speed tape (TAS) ────────────────────────────────────────────────────
+function drawLeftBox(ctx, tas) {
+  const x = LB_X
+  const y = AI_Y
+  const w = LB_W
+  const h = LB_H
+  const visibleRange = 80        // kt visible (40 above + 40 below)
+  const pxPerKt = h / visibleRange
+  const centreY = y + h / 2
+
+  // Background
+  ctx.fillStyle = '#111'
+  ctx.fillRect(x, y, w, h)
+  ctx.strokeStyle = '#444'
+  ctx.lineWidth = 1
+  ctx.strokeRect(x, y, w, h)
+
+  // Clip to tape area
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+
+  // Draw speed ticks and labels every 10 kt
+  const firstSpd = Math.ceil((tas - visibleRange / 2) / 10) * 10
+  for (let spd = firstSpd; spd <= tas + visibleRange / 2; spd += 10) {
+    const yPos = centreY - (spd - tas) * pxPerKt
+
+    ctx.strokeStyle = '#888'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(x + w, yPos)
+    ctx.lineTo(x + w - 10, yPos)
+    ctx.stroke()
+
+    ctx.font = '13px monospace'
+    ctx.fillStyle = '#DDDDDD'
+    ctx.textAlign = 'right'
+    ctx.fillText(String(spd), x + w - 12, yPos + 5)
+  }
+
+  ctx.restore()
+
+  // Current speed pointer box (centre)
+  const pY = centreY
+  ctx.fillStyle = '#222'
+  ctx.strokeStyle = '#FFD700'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  roundRect(ctx, x - 2, pY - 14, w + 4, 28, 3)
+  ctx.fill()
+  ctx.stroke()
+
+  // Speed readout
+  const spdStr = String(Math.round(tas)).padStart(3, ' ')
+  ctx.font = 'bold 15px monospace'
+  ctx.fillStyle = '#FFFFFF'
+  ctx.textAlign = 'center'
+  ctx.fillText(spdStr, x + w / 2, pY + 5)
 }
 
 function drawVSI(ctx, vs, x, y) {
@@ -456,12 +489,15 @@ function drawVSI(ctx, vs, x, y) {
   ctx.stroke()
 }
 
-// ── Mach tape (horizontal at bottom) ────────────────────────────────────────
-function drawMachTape(ctx, mach) {
+// ── Heading tape (horizontal at bottom) ─────────────────────────────────────
+function drawHeadingTape(ctx, heading) {
   const x = SPD_X
   const y = SPD_Y
   const w = SPD_W
   const h = SPD_H
+  const centreX = x + w / 2
+  const VISIBLE_DEG = 30          // degrees shown each side
+  const PX_PER_DEG = w / 2 / VISIBLE_DEG   // scale to fit exactly ±30°
 
   // Background
   ctx.fillStyle = '#111'
@@ -470,76 +506,69 @@ function drawMachTape(ctx, mach) {
   ctx.lineWidth = 1
   ctx.strokeRect(x, y, w, h)
 
-  // Clip
+  // Clip to tape area
   ctx.save()
   ctx.beginPath()
   ctx.rect(x, y, w, h)
   ctx.clip()
 
-  const centreX = x + w / 2
-  const machCentre = mach
-  const machPerPx = 0.6 / w  // 0 to ~0.6 Mach visible on tape
+  // Draw ticks and labels — iterate degrees in visible range
+  for (let offset = -VISIBLE_DEG; offset <= VISIBLE_DEG; offset += 1) {
+    const deg = ((Math.round(heading) + offset) % 360 + 360) % 360
+    const xPos = centreX + offset * PX_PER_DEG
 
-  // Draw Mach numbers every 0.1
-  for (let m = 0; m <= 1.5; m += 0.1) {
-    const xPos = centreX + (m - machCentre) / machPerPx
+    if (deg % 10 === 0) {
+      // Major tick + label
+      ctx.strokeStyle = '#888'
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(xPos, y + h - 14)
+      ctx.lineTo(xPos, y + h)
+      ctx.stroke()
 
-    if (xPos < x - 20 || xPos > x + w + 20) continue
-
-    // Major tick
-    ctx.strokeStyle = '#888'
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.moveTo(xPos, y + h - 12)
-    ctx.lineTo(xPos, y + h)
-    ctx.stroke()
-
-    // Label (display as tenths: 0.7 → "7", 0.8 → "8")
-    const label = Math.round(m * 10)
-    ctx.font = '13px monospace'
-    ctx.fillStyle = '#DDDDDD'
-    ctx.textAlign = 'center'
-    ctx.fillText(String(label), xPos, y + h - 14)
-
-    // Minor ticks
-    for (let dm = 0.02; dm < 0.1; dm += 0.02) {
-      const xm = centreX + (m + dm - machCentre) / machPerPx
-      if (xm < x || xm > x + w) continue
-      ctx.strokeStyle = '#555'
+      ctx.font = '12px monospace'
+      ctx.fillStyle = '#DDDDDD'
+      ctx.textAlign = 'center'
+      ctx.fillText(String(deg).padStart(3, '0'), xPos, y + h - 16)
+    } else if (deg % 5 === 0) {
+      // Minor tick
+      ctx.strokeStyle = '#666'
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(xm, y + h - 6)
-      ctx.lineTo(xm, y + h)
+      ctx.moveTo(xPos, y + h - 8)
+      ctx.lineTo(xPos, y + h)
       ctx.stroke()
     }
   }
 
   ctx.restore()
 
-  // Current Mach pointer (triangle above tape)
-  ctx.fillStyle = '#00CC00'
+  // Current heading pointer — yellow triangle at top centre
+  ctx.fillStyle = '#FFD700'
   ctx.beginPath()
-  ctx.moveTo(centreX, y - 2)
-  ctx.lineTo(centreX - 6, y + 10)
-  ctx.lineTo(centreX + 6, y + 10)
+  ctx.moveTo(centreX, y)
+  ctx.lineTo(centreX - 7, y + 14)
+  ctx.lineTo(centreX + 7, y + 14)
   ctx.closePath()
   ctx.fill()
 
-  // Current Mach line on tape
-  ctx.strokeStyle = '#00FF00'
-  ctx.lineWidth = 2
+  // Current heading readout box at bottom centre
+  const boxW = 44
+  const boxH = 20
+  const boxX = centreX - boxW / 2
+  const boxY = y + h - boxH - 2
+  ctx.fillStyle = '#222'
+  ctx.strokeStyle = '#FFD700'
+  ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.moveTo(centreX, y)
-  ctx.lineTo(centreX, y + h)
+  roundRect(ctx, boxX, boxY, boxW, boxH, 3)
+  ctx.fill()
   ctx.stroke()
-}
 
-// ── Mach readout (bottom-left of PFD) ───────────────────────────────────────
-function drawMachReadout(ctx, mach) {
-  ctx.font = 'bold 16px monospace'
-  ctx.fillStyle = '#00FF00'
-  ctx.textAlign = 'left'
-  ctx.fillText(`.${String(Math.round(mach * 1000)).padStart(3, '0')}`, AI_X, SPD_Y + SPD_H + 20)
+  ctx.font = 'bold 13px monospace'
+  ctx.fillStyle = '#FFD700'
+  ctx.textAlign = 'center'
+  ctx.fillText(String(Math.round(heading) % 360).padStart(3, '0'), centreX, boxY + 14)
 }
 
 // ── Barometric indicator (bottom-right) ─────────────────────────────────────

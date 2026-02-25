@@ -12,7 +12,7 @@ const ACY = H * 0.765
 const SCALE = 2.0
 
 // Compass arc radius (centred on aircraft)
-const CRAD = 295
+const CRAD = 160 * SCALE  // 160 NM, equal spacing with 40/80/120 rings
 
 const toRad = (d) => (d * Math.PI) / 180
 
@@ -27,8 +27,8 @@ function toScreen(bearing, dist, track) {
 
 // ── Default state so we can render something before WS connects ──────────
 const DEFAULT = {
-  gs: 478, tas: 464,
-  wind_dir: 234, wind_speed: 22,
+  gs: 300, tas: 300,
+  wind_dir: 0, wind_speed: 0,
   track: 87, heading: 87,
   active_wp_name: 'ABHEDVI', active_wp_bearing: 87,
   active_wp_distance: 5.8, active_wp_eta: '18:31',
@@ -65,11 +65,9 @@ function render(ctx, s) {
   const track = s.track ?? 87
 
   drawRangeRings(ctx, track)
-  drawRoute(ctx, s, track)
   drawCompassArc(ctx, track)
   drawAircraftSymbol(ctx)
-  drawWindArrow(ctx, s.wind_dir, s.wind_speed, track)
-  drawTextOverlays(ctx, s)
+drawTextOverlays(ctx, s)
 }
 
 // ── Range rings ─────────────────────────────────────────────────────────────
@@ -79,10 +77,10 @@ function drawRangeRings(ctx, track) {
   ctx.setLineDash([8, 6])
   ctx.lineWidth = 1.5
 
-  for (const nm of [80, 120]) {
+  for (const nm of [40, 80, 120]) {
     const r = nm * SCALE
     ctx.beginPath()
-    ctx.arc(ACX, ACY, r, Math.PI, 0, true)   // upper semicircle
+    ctx.arc(ACX, ACY, r, Math.PI, 0, false)  // upper semicircle
     ctx.stroke()
   }
   ctx.setLineDash([])
@@ -92,9 +90,11 @@ function drawRangeRings(ctx, track) {
   ctx.font = 'bold 13px monospace'
   ctx.fillStyle = '#00CC00'
   ctx.textAlign = 'right'
+  ctx.fillText('40',  ACX - 40  * SCALE - 4, ACY + 4)
   ctx.fillText('80',  ACX - 80  * SCALE - 4, ACY + 4)
   ctx.fillText('120', ACX - 120 * SCALE - 4, ACY + 4)
   ctx.textAlign = 'left'
+  ctx.fillText('40',  ACX + 40  * SCALE + 4, ACY + 4)
   ctx.fillText('80',  ACX + 80  * SCALE + 4, ACY + 4)
   ctx.fillText('120', ACX + 120 * SCALE + 4, ACY + 4)
   ctx.textAlign = 'left'
@@ -362,22 +362,6 @@ function drawTextOverlays(ctx, s) {
   ctx.fillText(`${active_wp_distance ?? '--.-'} NM`, W - 6, 44)
   ctx.fillStyle = '#00FF00'
   ctx.fillText(`${active_wp_eta ?? '--:--'}`, W - 6, 58)
-
-  // ── Drift indicator near aircraft ──
-  const driftVal = drift ?? 0
-  ctx.textAlign = 'center'
-  ctx.font = 'bold 12px monospace'
-  ctx.fillStyle = '#00FF00'
-  if (driftVal !== 0) {
-    const sign = driftVal > 0 ? '+' : ''
-    ctx.fillText(`${sign}${Math.round(driftVal)}`, ACX, ACY + 28)
-  }
-
-  // Track angle error label
-  ctx.fillStyle = '#00FF00'
-  ctx.font = '11px monospace'
-  ctx.fillText('+09', ACX - 22, ACY + 16)
-  ctx.fillText('-13', ACX + 22, ACY + 16)
 
   // ── Bottom-left: VOR 1 ──
   ctx.textAlign = 'left'

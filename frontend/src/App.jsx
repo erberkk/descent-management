@@ -41,7 +41,7 @@ export default function App() {
 
           <div className="display-bezel">
             <div className="display-screen">
-              <PrimaryFlightDisplay state={state} />
+              <PrimaryFlightDisplay state={state} selAlt={fcu.fcu_sel_alt} selVs={fcu.fcu_sel_vs} />
             </div>
             <div className="bezel-corner tl" />
             <div className="bezel-corner tr" />

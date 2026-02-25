@@ -44,12 +44,13 @@ class Aircraft:
 
         # ── Altitude ────────────────────────────────────────────────────────
         self.altitude = 27000.0
-        self.sel_alt  = 36000.0       # driven by FCU
+        self.sel_alt  = 27000.0       # driven by FCU
 
         # ── Speeds ──────────────────────────────────────────────────────────
-        self.mach = 0.788
-        self.tas  = 464.0
-        self.gs   = 478.0
+        self.mach       = 0.788
+        self.tas        = 300.0
+        self.gs         = 300.0
+        self.actual_spd = 300.0   # gradually moves toward fcu_sel_spd
 
         # ── Attitude ────────────────────────────────────────────────────────
         self.pitch = 2.5
@@ -92,6 +93,7 @@ class Aircraft:
         self.phase           = "CRUISE"
         self.descent_trigger = 60.0
         self._vs_managed_override = False   # True when FCU VS knob is active
+        self._leveloff_target     = None    # Temporary stop altitude from LVL OFF
 
         # ── FCU state (mirrors the physical FCU panel) ───────────────────────
         # Speed section
@@ -177,8 +179,6 @@ class Aircraft:
             self.fcu_hdg_managed = False
             mode = "HDG" if self.fcu_hdg_trk_mode == "HDG" else "TRK"
             self.lat_mode = mode
-            self.heading  = self.fcu_sel_hdg
-            self.track    = self.fcu_sel_hdg
 
         if "fcu_hdg_managed" in patch:
             self.fcu_hdg_managed = bool(patch["fcu_hdg_managed"])
@@ -203,15 +203,18 @@ class Aircraft:
         # ── ALT knob ────────────────────────────────────────────────────────
         if "fcu_sel_alt" in patch:
             raw  = float(patch["fcu_sel_alt"])
-            step = self.fcu_alt_step
-            snapped = round(raw / step) * step
-            self.sel_alt = max(100.0, min(49900.0, snapped))
-            # Determine new alt mode
+            self.sel_alt = max(0.0, min(49000.0, round(raw / 1000) * 1000))
+            rate = abs(self.fcu_sel_vs) if self.fcu_sel_vs != 0 else 1500.0
             if self.altitude < self.sel_alt - 50:
+                self.vs = rate
                 self.alt_mode = "CLB"
+                self._vs_managed_override = True
             elif self.altitude > self.sel_alt + 50:
+                self.vs = -rate
                 self.alt_mode = "DES"
+                self._vs_managed_override = True
             else:
+                self.vs = 0.0
                 self.alt_mode = "ALT"
 
         if "fcu_alt_step" in patch:
@@ -230,13 +233,23 @@ class Aircraft:
                     self.vs       = -3000
                     self.alt_mode = "DES"
 
+        # ── Level off ────────────────────────────────────────────────────────
+        if patch.get("level_off") and self.vs != 0:
+            direction = 1 if self.vs > 0 else -1
+            self._leveloff_target = round((self.altitude + direction * 100) / 100) * 100
+            self.fcu_sel_vs = 0.0
+            # sel_alt stays unchanged — pilot keeps full control of target altitude
+
         # ── V/S knob ────────────────────────────────────────────────────────
         if "fcu_sel_vs" in patch:
-            self.fcu_sel_vs     = max(-6000.0, min(6000.0, float(patch["fcu_sel_vs"])))
-            self.fcu_vs_managed = False
-            self.vs             = self.fcu_sel_vs
-            self._vs_managed_override = True
-            self.alt_mode = "V/S" if self.fcu_vs_fpa_mode == "V/S" else "FPA"
+            self.fcu_sel_vs = max(-6000.0, min(6000.0, float(patch["fcu_sel_vs"])))
+            # If already climbing/descending, apply new rate immediately
+            if self._vs_managed_override and self.vs != 0:
+                # Preserve direction toward sel_alt
+                if self.altitude < self.sel_alt:
+                    self.vs = abs(self.fcu_sel_vs)
+                else:
+                    self.vs = -abs(self.fcu_sel_vs)
 
         if "fcu_vs_managed" in patch:
             self.fcu_vs_managed = bool(patch["fcu_vs_managed"])
@@ -291,37 +304,41 @@ class Aircraft:
             self.altitude += self.vs * (dt / 60.0)
             self.altitude  = max(self.altitude, 500.0)
 
-        # Stop descending at sel_alt
-        if self.vs < 0 and self.altitude <= self.sel_alt:
+        # Level off at LVL OFF target (100 ft coast, doesn't change sel_alt)
+        if self._leveloff_target is not None:
+            if (self.vs < 0 and self.altitude <= self._leveloff_target) or \
+               (self.vs > 0 and self.altitude >= self._leveloff_target):
+                self.altitude = self._leveloff_target
+                self.vs = 0.0
+                self.alt_mode = "ALT"
+                self._vs_managed_override = False
+                self._leveloff_target = None
+
+        # Level off at sel_alt (pilot-selected target)
+        elif (self.vs < 0 and self.altitude <= self.sel_alt) or \
+             (self.vs > 0 and self.altitude >= self.sel_alt):
             self.altitude = self.sel_alt
             self.vs       = 0.0
             self.alt_mode = "ALT"
             self._vs_managed_override = False
             self.fcu_vs_managed = True
 
-        # ── Mach / Speed ─────────────────────────────────────────────────────
-        if not self.fcu_spd_managed:
-            # Slew toward FCU-selected Mach
-            target = self.fcu_sel_mach
-            error  = target - self.mach
-            self.mach += max(-0.002, min(0.002, error))
-        else:
-            # Managed: auto-schedule by phase
-            if self.phase == "CRUISE":
-                self.mach = 0.788
-            elif self.phase == "DESCENT":
-                if self.altitude > 25000:
-                    self.mach = 0.788
-                else:
-                    self.mach = max(0.78 * (self.altitude / 25000), 0.45)
+        # ── Actual speed: slew toward fcu_sel_spd at 10 kt/NM ───────────────
+        dist_nm = (self.actual_spd / 3600.0) * dt
+        max_change = 10.0 * dist_nm
+        error = self.fcu_sel_spd - self.actual_spd
+        self.actual_spd += max(-max_change, min(max_change, error))
+        self.actual_spd = round(max(50.0, self.actual_spd), 1)
 
-        # ── TAS / GS ─────────────────────────────────────────────────────────
-        temp_k = 288.15 - 0.0065 * min(self.altitude * 0.3048, 11000)
-        sos     = math.sqrt(1.4 * 287.05 * temp_k) * 1.94384
-        self.tas = self.mach * sos
-
+        self.tas = self.actual_spd
         wind_comp = self.wind_speed * math.cos(to_rad(self.wind_dir - self.track))
         self.gs   = max(self.tas + wind_comp, 50.0)
+
+        # ── Heading: turn toward fcu_sel_hdg at 3°/second ───────────────────
+        hdg_error = (self.fcu_sel_hdg - self.heading + 540) % 360 - 180
+        max_turn  = 3.0 * dt
+        self.heading = (self.heading + max(-max_turn, min(max_turn, hdg_error))) % 360
+        self.track   = self.heading
 
         # ── Position ─────────────────────────────────────────────────────────
         dist_nm = (self.gs / 3600.0) * dt
@@ -381,6 +398,7 @@ class Aircraft:
             "sel_alt":  int(self.sel_alt),
             "mach":     round(self.mach, 3),
             "tas":      round(self.tas),
+            "actual_spd": round(self.actual_spd, 1),
             "gs":       round(self.gs),
             "pitch":    round(self.pitch, 1),
             "roll":     round(self.roll, 1),

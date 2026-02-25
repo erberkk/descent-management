@@ -186,118 +186,34 @@ export function FCU({ fcu, patch }) {
   return (
     <div className="fcu-panel">
 
-      {/* ────────────── TOP DISPLAY STRIP ────────────── */}
-      <div className="fcu-display-strip">
-
-        {/* MACH display */}
-        <LCDDisplay
-          label="MACH"
-          value={machStr}
-          managed={fcu.fcu_spd_managed}
-          dot={true}
-        />
-
-        {/* HDG + LAT labels */}
-        <div className="fcu-lcd-group">
-          <LCDDisplay
-            label={<><span>HDG</span><span className="fcu-lat-label">LAT</span></>}
-            value={hdgStr}
-            managed={fcu.fcu_hdg_managed}
-            dot={true}
-          />
-        </div>
-
-        {/* Mode buttons (HDG / V/S) */}
-        <div className="fcu-mode-btns">
-          <button className="fcu-mode-btn" onClick={() => patch({ fcu_hdg_managed: false })}>
-            HDG
-          </button>
-          <div className="fcu-mode-sep" />
-          <button className="fcu-mode-btn" onClick={() => patch({ fcu_vs_managed: false })}>
-            V/S
-          </button>
-        </div>
-
-        {/* ALT display — large */}
-        <div className="fcu-lcd wide alt-lcd">
-          <div className="fcu-lcd-label">ALT</div>
-          <div className="fcu-lcd-value alt-value">{altStr}</div>
-          <div className="fcu-lcd-dot on" />
-        </div>
-
-        {/* V/S display */}
-        <LCDDisplay
-          label="V/S"
-          value={vsStr}
-          managed={fcu.fcu_vs_managed}
-          dot={false}
-        />
-      </div>
-
       {/* ────────────── BOTTOM CONTROLS STRIP ────────────── */}
       <div className="fcu-controls-strip">
 
         {/* ── SPEED SECTION ── */}
         <div className="fcu-section spd-section">
           <div className="fcu-knob-col">
-            <PushButton onClick={toggleSpdManaged} title="Push: managed / Pull: selected" />
-            <div
-              className="fcu-knob spd-knob"
-              style={{ transform: `rotate(${spdAngle}deg)` }}
-              {...spdKnob}
-            >
-              <div className="fcu-knob-marker" />
-            </div>
-            <div className="fcu-knob-label">SPD<br />MACH</div>
+            <div className="fcu-spd-display">{fcu.fcu_sel_spd}</div>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.min(fcu.fcu_sel_spd + 5, 999) })}>▲</button>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.max(fcu.fcu_sel_spd - 5, 0) })}>▼</button>
+            <div className="fcu-knob-label">SPEED</div>
           </div>
-          <LEDButton label="LOC" active={fcu.loc_armed}
-            onClick={() => patch({ loc_armed: !fcu.loc_armed })} />
         </div>
 
         <Divider />
 
-        {/* ── HDG / AP SECTION ── */}
+        {/* ── HDG SECTION ── */}
         <div className="fcu-section hdg-section">
-          {/* Rocker toggles at top */}
-          <div className="fcu-rocker-row">
-            <Rocker
-              options={['HDG', 'TRK']}
-              value={fcu.fcu_hdg_trk_mode}
-              onChange={(v) => patch({ fcu_hdg_trk_mode: v })}
-            />
-            <Rocker
-              options={['V/S', 'FPA']}
-              value={fcu.fcu_vs_fpa_mode}
-              onChange={(v) => patch({ fcu_vs_fpa_mode: v })}
-            />
-          </div>
-
-          {/* HDG knob (centre with blue ▲) + AP buttons side by side */}
-          <div className="fcu-hdg-row">
-            <div className="fcu-knob-col">
-              <PushButton onClick={toggleHdgManaged} title="Push: NAV managed" />
-              <div
-                className="fcu-knob hdg-knob"
-                style={{ transform: `rotate(${hdgAngle}deg)` }}
-                {...hdgKnob}
-              >
-                <div className="fcu-knob-marker" />
-                <div className="fcu-hdg-triangle">▲</div>
-              </div>
-              <div className="fcu-knob-label">HDG/<br />TRK</div>
+          <div className="fcu-knob-col">
+            <div className="fcu-spd-display">{String(Math.round(fcu.fcu_sel_hdg)).padStart(3, '0')}</div>
+            <div className="fcu-hdg-btn-row">
+              <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_hdg: (fcu.fcu_sel_hdg - 1 + 360) % 360 })}>◄</button>
+              <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_hdg: (fcu.fcu_sel_hdg + 1) % 360 })}>►</button>
             </div>
-
-            {/* AP + A/THR buttons */}
-            <div className="fcu-ap-col">
-              <div className="fcu-ap-row">
-                <LEDButton label="AP1" active={fcu.ap1_engaged}
-                  onClick={() => patch({ ap1_engaged: !fcu.ap1_engaged })} />
-                <LEDButton label="AP2" active={fcu.ap2_engaged}
-                  onClick={() => patch({ ap2_engaged: !fcu.ap2_engaged })} />
-              </div>
-              <LEDButton label="A/THR" active={fcu.athr_engaged}
-                onClick={() => patch({ athr_engaged: !fcu.athr_engaged })} />
+            <div className="fcu-hdg-btn-row">
+              <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_hdg: (fcu.fcu_sel_hdg - 5 + 360) % 360 })}>◄◄</button>
+              <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_hdg: (fcu.fcu_sel_hdg + 5) % 360 })}>►►</button>
             </div>
+            <div className="fcu-knob-label">HDG</div>
           </div>
         </div>
 
@@ -305,53 +221,37 @@ export function FCU({ fcu, patch }) {
 
         {/* ── ALT SECTION ── */}
         <div className="fcu-section alt-section">
-          {/* Step selector */}
-          <div className="fcu-alt-step-row">
-            <Rocker
-              options={[100, 1000]}
-              value={fcu.fcu_alt_step}
-              onChange={(v) => patch({ fcu_alt_step: v })}
-            />
-            <span className="fcu-metric-label">METRIC<br />ALT</span>
-          </div>
-
           <div className="fcu-knob-col">
-            <div
-              className="fcu-knob alt-knob"
-              style={{ transform: `rotate(${altAngle}deg)` }}
-              {...altKnob}
-            >
-              <div className="fcu-knob-marker" />
-            </div>
+            <div className="fcu-spd-display fcu-alt-display">{String(fcu.fcu_sel_alt).padStart(5, '0')}</div>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.min(fcu.fcu_sel_alt + 1000, 49000) })}>▲</button>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.max(fcu.fcu_sel_alt - 1000, 0) })}>▼</button>
             <div className="fcu-knob-label">ALT</div>
           </div>
+        </div>
 
-          <LEDButton label="EXPED" active={fcu.exped_active}
-            onClick={() => patch({ exped_active: !fcu.exped_active })} />
+        <Divider />
+
+        {/* ── LEVEL OFF ── */}
+        <div className="fcu-knob-col">
+          <button
+            className="fcu-leveloff-btn"
+            onClick={() => patch({ level_off: true, fcu_sel_vs: 0 })}
+          >
+            <span>LVL</span><span>OFF</span>
+          </button>
         </div>
 
         <Divider />
 
         {/* ── V/S SECTION ── */}
         <div className="fcu-section vs-section">
-          <div className="fcu-vs-up-label">UP</div>
           <div className="fcu-knob-col">
-            <PushButton onClick={levelOff} title="Push: Level Off" />
-            <div
-              className="fcu-knob vs-knob"
-              style={{ transform: `rotate(${vsAngle}deg)` }}
-              {...vsKnob}
-            >
-              <div className="fcu-knob-marker" />
+            <div className="fcu-spd-display fcu-vs-display">
+              {fcu.fcu_sel_vs >= 0 ? '+' : ''}{fcu.fcu_sel_vs}
             </div>
-            <div className="fcu-knob-label">V/S<br />FPA</div>
-          </div>
-          <div className="fcu-vs-dn-label">DN</div>
-
-          <div className="fcu-vs-right">
-            <LEDButton label="APPR" active={fcu.appr_armed}
-              onClick={() => patch({ appr_armed: !fcu.appr_armed })} />
-            <div className="fcu-leveloff-label">PUSH<br />TO<br />LEVEL<br />OFF</div>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.min(fcu.fcu_sel_vs + 100, 6000) })}>▲</button>
+            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.max(fcu.fcu_sel_vs - 100, -6000) })}>▼</button>
+            <div className="fcu-knob-label">V/S</div>
           </div>
         </div>
 
