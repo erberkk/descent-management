@@ -1,0 +1,75 @@
+############################
+# Genel
+############################
+
+# OS dosyaları
+.DS_Store
+Thumbs.db
+
+# Log dosyaları
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE / Editor
+.vscode/
+.idea/
+*.iml
+
+############################
+# Python / Backend
+############################
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# Sanal ortamlar
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller / build çıktıları
+build/
+dist/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Çevre değişkenleri
+.env
+.env.*
+!.env.example
+
+############################
+# Node / Frontend
+############################
+
+node_modules/
+frontend/node_modules/
+
+# Vite / React build çıktıları
+frontend/dist/
+
+# Paket yöneticisi cache
+.npm/
+.yarn/
+.pnpm-store/
+
+# Diğer
+*.tmp
+*.swp
+*.swo
+

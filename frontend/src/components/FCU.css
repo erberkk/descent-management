@@ -1,0 +1,407 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   FCU — Flight Control Unit
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.fcu-panel {
+  width: 100%;
+  background: linear-gradient(180deg, #5e6b78 0%, #4f5c68 50%, #475460 100%);
+  border-radius: 6px 6px 0 0;
+  border: 1px solid #2a333c;
+  border-bottom: none;
+  box-shadow:
+    inset 0 1px 2px rgba(255,255,255,0.12),
+    inset 0 -1px 2px rgba(0,0,0,0.4);
+  display: flex;
+  flex-direction: column;
+  font-family: 'Courier New', Courier, monospace;
+  user-select: none;
+}
+
+/* ── Display strip ──────────────────────────────────────────────────────── */
+.fcu-display-strip {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 6px 18px 4px;
+  background: #1a1e24;
+  border-bottom: 2px solid #0a0c0f;
+  height: 50px;
+}
+
+/* LCD window */
+.fcu-lcd {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 10px;
+  min-width: 80px;
+  position: relative;
+}
+.fcu-lcd.wide    { min-width: 110px; }
+
+.fcu-lcd-label {
+  font-size: 9px;
+  color: #8899aa;
+  letter-spacing: 1.5px;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 1px;
+}
+
+.fcu-lat-label {
+  font-size: 9px;
+  color: #8899aa;
+  letter-spacing: 1.5px;
+}
+
+.fcu-lcd-value {
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 3px;
+  color: #e8c84a;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.fcu-lcd-value.dashes { color: #4a5260; }
+
+/* ALT large display */
+.alt-lcd { min-width: 160px; }
+.alt-value {
+  font-size: 30px;
+  letter-spacing: 4px;
+  color: #e8c84a;
+}
+
+.fcu-lcd-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-top: 2px;
+}
+.fcu-lcd-dot.on  { background: #e8c84a; box-shadow: 0 0 4px #e8c84a88; }
+.fcu-lcd-dot.off { background: transparent; border: 1px solid #3a4450; }
+
+/* HDG + LAT group */
+.fcu-lcd-group { display: flex; align-items: center; }
+
+/* Mode buttons (HDG / V/S) in display strip */
+.fcu-mode-btns {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 14px;
+}
+.fcu-mode-btn {
+  background: #2a333c;
+  border: 1px solid #3a4450;
+  color: #99aabb;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.fcu-mode-btn:hover  { background: #3a4450; }
+.fcu-mode-btn:active { background: #1e2830; }
+
+.fcu-mode-sep {
+  width: 1px; height: 16px;
+  background: #3a4450;
+  margin: 0 6px;
+}
+
+/* ── Controls strip ─────────────────────────────────────────────────────── */
+.fcu-controls-strip {
+  display: flex;
+  align-items: center;
+  padding: 6px 16px;
+  gap: 0;
+  min-height: 96px;
+}
+
+/* ── Section divider (vertical bar) ───────────────────────────────────────*/
+.fcu-sec-divider {
+  width: 1px;
+  height: 72px;
+  background: linear-gradient(180deg, transparent, #1e2830 30%, #1e2830 70%, transparent);
+  margin: 0 14px;
+  flex-shrink: 0;
+}
+
+/* ── Individual sections ──────────────────────────────────────────────────*/
+.fcu-section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Speed section */
+.spd-section {
+  flex: 0 0 160px;
+  justify-content: center;
+}
+
+/* HDG + AP section */
+.hdg-section {
+  flex: 0 0 300px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ALT section */
+.alt-section {
+  flex: 0 0 220px;
+  align-items: center;
+  gap: 8px;
+}
+
+/* V/S section */
+.vs-section {
+  flex: 1;
+  gap: 6px;
+}
+
+/* ── Knob column (push-btn + knob + label stacked) ────────────────────── */
+.fcu-knob-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.fcu-knob-label {
+  font-size: 9px;
+  color: #99aabb;
+  text-align: center;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+/* ── Knob base ─────────────────────────────────────────────────────────── */
+.fcu-knob {
+  border-radius: 50%;
+  cursor: ns-resize;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+.fcu-knob:hover  { filter: brightness(1.08); }
+.fcu-knob:active { cursor: grabbing; }
+
+.fcu-knob-marker {
+  position: absolute;
+  top: 9%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 30%;
+  background: #3a3a3a;
+  border-radius: 2px;
+}
+
+/* SPD/MACH knob */
+.spd-knob {
+  width: 58px; height: 58px;
+  background: radial-gradient(circle at 36% 30%,
+    #dce4ec 0%, #b0bcc8 40%, #7a8c9c 80%, #485a6a 100%);
+  box-shadow:
+    inset 0 2px 5px rgba(255,255,255,0.45),
+    inset 0 -2px 4px rgba(0,0,0,0.5),
+    0 3px 8px rgba(0,0,0,0.7);
+}
+
+/* HDG knob */
+.hdg-knob {
+  width: 56px; height: 56px;
+  background: radial-gradient(circle at 36% 30%,
+    #cad6e4 0%, #9aacbc 40%, #6a7c8c 80%, #3a4c5a 100%);
+  box-shadow:
+    inset 0 2px 4px rgba(255,255,255,0.4),
+    inset 0 -2px 3px rgba(0,0,0,0.5),
+    0 3px 8px rgba(0,0,0,0.7);
+}
+.fcu-hdg-triangle {
+  position: absolute;
+  color: #5599ff;
+  font-size: 16px;
+  line-height: 1;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* ALT knob — hexagonal grip */
+.alt-knob {
+  width: 56px; height: 56px;
+  background: radial-gradient(circle at 36% 30%,
+    #c4ced8 0%, #98a8b8 40%, #687888 80%, #3a4a58 100%);
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.7);
+}
+.alt-knob .fcu-knob-marker {
+  top: 14%;
+}
+
+/* V/S knob */
+.vs-knob {
+  width: 50px; height: 50px;
+  background: radial-gradient(circle at 36% 30%,
+    #bcc8d4 0%, #90a0b0 40%, #627280 80%, #364654 100%);
+  box-shadow:
+    inset 0 2px 4px rgba(255,255,255,0.35),
+    inset 0 -2px 3px rgba(0,0,0,0.5),
+    0 3px 7px rgba(0,0,0,0.65);
+}
+
+/* ── Push button (on top of knob) ─────────────────────────────────────── */
+.fcu-push-btn {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #8090a0, #2a3840);
+  border: 1px solid #1a2430;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.6), inset 0 1px rgba(255,255,255,0.1);
+  transition: box-shadow 0.1s;
+}
+.fcu-push-btn:active {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
+/* ── LED button (LOC, AP1, AP2, A/THR, EXPED, APPR) ─────────────────────*/
+.fcu-led-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 5px 10px 4px;
+  background: linear-gradient(180deg, #2a3440 0%, #1e2830 100%);
+  border: 1px solid #3a4850;
+  border-radius: 4px;
+  cursor: pointer;
+  min-width: 44px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.5), inset 0 1px rgba(255,255,255,0.05);
+  transition: background 0.1s, border-color 0.1s;
+}
+.fcu-led-btn:hover { background: linear-gradient(180deg, #343e4c 0%, #283240 100%); }
+.fcu-led-btn:active {
+  background: linear-gradient(180deg, #1e2830 0%, #2a3440 100%);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
+.fcu-led-btn.active {
+  background: linear-gradient(180deg, #1a3020 0%, #102418 100%);
+  border-color: #00aa44;
+  box-shadow: 0 0 8px rgba(0,200,80,0.3), inset 0 1px rgba(255,255,255,0.05);
+}
+
+.fcu-led-bar {
+  display: block;
+  width: 22px; height: 2px;
+  background: #0a1810;
+  border-radius: 1px;
+  margin-bottom: 2px;
+  transition: background 0.15s;
+}
+.fcu-led-btn.active .fcu-led-bar {
+  background: #00ee55;
+  box-shadow: 0 0 3px #00ee5588;
+}
+
+.fcu-led-label {
+  font-size: 10px;
+  color: #99aabb;
+  letter-spacing: 0.5px;
+  margin-top: 3px;
+  font-family: 'Courier New', monospace;
+}
+.fcu-led-btn.active .fcu-led-label { color: #ccffdd; }
+
+/* ── Rocker (2-position toggle) ──────────────────────────────────────────*/
+.fcu-rocker {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #2a3440;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.fcu-rocker-opt {
+  padding: 2px 7px;
+  font-size: 9px;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
+  text-align: center;
+  color: #7a8898;
+  background: #1e2830;
+  cursor: pointer;
+  border: none;
+  transition: background 0.1s, color 0.1s;
+}
+.fcu-rocker-opt:hover  { background: #283444; }
+.fcu-rocker-opt.active { background: #e8c84a; color: #111; font-weight: bold; }
+
+/* ── HDG section layout ──────────────────────────────────────────────────*/
+.fcu-rocker-row {
+  display: flex;
+  gap: 6px;
+  padding-left: 4px;
+}
+.fcu-hdg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fcu-ap-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fcu-ap-row {
+  display: flex;
+  gap: 5px;
+}
+
+/* ── ALT section layout ──────────────────────────────────────────────────*/
+.fcu-alt-step-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.fcu-metric-label {
+  font-size: 8px;
+  color: #7a8898;
+  text-align: center;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+}
+
+/* ── V/S section layout ──────────────────────────────────────────────────*/
+.fcu-vs-up-label {
+  font-size: 9px;
+  color: #7a8898;
+  letter-spacing: 0.5px;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.fcu-vs-dn-label {
+  font-size: 9px;
+  color: #7a8898;
+  letter-spacing: 0.5px;
+  align-self: flex-end;
+  margin-bottom: 4px;
+}
+.fcu-vs-right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+.fcu-leveloff-label {
+  font-size: 7.5px;
+  color: #7a8898;
+  text-align: center;
+  line-height: 1.4;
+  letter-spacing: 0.3px;
+}
