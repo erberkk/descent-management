@@ -36,6 +36,74 @@ def move_point(lat: float, lon: float, brg_deg: float, dist_nm: float):
     return math.degrees(lat2), math.degrees(lon2)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISA Standard Atmosphere
+# ═══════════════════════════════════════════════════════════════════════════════
+_ISA_T0    = 288.15    # K   — sea-level temperature
+_ISA_P0    = 101325.0  # Pa  — sea-level pressure
+_ISA_RHO0  = 1.225     # kg/m³ — sea-level density
+_ISA_GAMMA = 1.4       # ratio of specific heats (air)
+_ISA_R     = 287.05    # J/(kg·K) — specific gas constant
+_ISA_LAPSE = 0.0065    # K/m — tropospheric lapse rate
+_ISA_TROP  = 11000.0   # m  — tropopause altitude
+_ISA_EXP   = 9.80665 / (_ISA_LAPSE * _ISA_R)   # ≈ 5.2558
+
+
+def isa_atmosphere(altitude_ft: float) -> dict:
+    """Standard ISA atmosphere at a given pressure altitude (ft)."""
+    h = altitude_ft * 0.3048                  # ft → m
+    if h <= _ISA_TROP:
+        T = _ISA_T0 - _ISA_LAPSE * h
+        P = _ISA_P0 * (T / _ISA_T0) ** _ISA_EXP
+    else:                                     # isothermal stratosphere
+        T   = 216.65
+        T_t = _ISA_T0 - _ISA_LAPSE * _ISA_TROP
+        P_t = _ISA_P0 * (T_t / _ISA_T0) ** _ISA_EXP
+        P   = P_t * math.exp(-9.80665 * (h - _ISA_TROP) / (_ISA_R * T))
+    rho    = P / (_ISA_R * T)
+    sos_kt = math.sqrt(_ISA_GAMMA * _ISA_R * T) * 1.94384   # m/s → kt
+    return {"T": T, "P": P, "rho": rho, "sos_kt": sos_kt}
+
+
+def _crossover_ft(mach: float, ias_kt: float) -> float:
+    """Binary-search for the altitude where Mach and IAS yield the same TAS.
+    Below crossover: TAS_mach > TAS_ias  → fly by IAS.
+    Above crossover: TAS_ias  > TAS_mach → fly by Mach.
+    """
+    lo, hi = 0.0, 45000.0
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        atm = isa_atmosphere(mid)
+        tas_mach = mach * atm["sos_kt"]
+        tas_ias  = ias_kt * math.sqrt(_ISA_RHO0 / atm["rho"])
+        if tas_mach > tas_ias:
+            lo = mid   # crossover is above — search higher
+        else:
+            hi = mid   # crossover is below — search lower
+    return (lo + hi) / 2.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# A320 Fixed Aircraft Parameters
+# ═══════════════════════════════════════════════════════════════════════════════
+A320_MASS_KG   = 65_000      # fixed operating mass [kg]  (user-specified)
+A320_WING_S    = 122.6       # reference wing area [m²]
+A320_AR        = 9.4         # wing aspect ratio
+A320_OSWALD    = 0.85        # Oswald efficiency factor
+A320_CD0       = 0.024       # zero-lift drag coefficient (clean cruise)
+A320_G         = 9.80665     # gravitational acceleration [m/s²]
+
+# Thrust model — CFM56-5B4 (approximate)
+A320_T_MAX_SL_N = 120_000   # N per engine, sea-level static
+A320_N_ENGINES  = 2
+A320_N1_IDLE    = 24.0      # % N1 at ground/flight IDLE
+A320_N1_CLB     = 88.0      # % N1 at CLB (climb) thrust
+A320_N1_MIN     = 18.0      # % N1 absolute minimum
+
+# Crossover altitude for M0.78 / 300 kt IAS in standard ISA  →  ≈ FL270
+A320_CROSSOVER_FT = _crossover_ft(0.78, 300)
+
+
 class Aircraft:
     def __init__(self):
         # ── Position ────────────────────────────────────────────────────────
@@ -45,12 +113,6 @@ class Aircraft:
         # ── Altitude ────────────────────────────────────────────────────────
         self.altitude = 27000.0
         self.sel_alt  = 27000.0       # driven by FCU
-
-        # ── Speeds ──────────────────────────────────────────────────────────
-        self.mach       = 0.788
-        self.tas        = 300.0
-        self.gs         = 300.0
-        self.actual_spd = 300.0   # gradually moves toward fcu_sel_spd
 
         # ── Attitude ────────────────────────────────────────────────────────
         self.pitch = 2.5
@@ -64,6 +126,15 @@ class Aircraft:
         # ── Wind ────────────────────────────────────────────────────────────
         self.wind_dir   = 234.0
         self.wind_speed = 22.0
+
+        # ── Speeds (ISA-derived at initial altitude) ─────────────────────────
+        self.mach = 0.788
+        _atm      = isa_atmosphere(self.altitude)
+        self.tas  = round(self.mach * _atm["sos_kt"], 1)
+        self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
+        self.gs   = round(max(self.tas + self.wind_speed * math.cos(
+                        to_rad(self.wind_dir - self.heading)), 50.0), 1)
+        self.actual_spd = self.ias   # kept for API compatibility
 
         # ── PFD mode annunciator strings ─────────────────────────────────────
         self.spd_mode = "MACH"
@@ -89,11 +160,15 @@ class Aircraft:
         self.sim_time   = 0.0
         self.base_clock = 18 * 3600 + 31 * 60   # 18:31
 
+        # ── Thrust / engine ──────────────────────────────────────────────────
+        self.n1 = 70.0          # % N1 (both engines, symmetric)
+
         # ── Phase control ────────────────────────────────────────────────────
         self.phase           = "CRUISE"
         self.descent_trigger = 60.0
         self._vs_managed_override = False   # True when FCU VS knob is active
         self._leveloff_target     = None    # Temporary stop altitude from LVL OFF
+        self._alt_capture_vs      = None    # VS at moment of entering capture zone
 
         # ── FCU state (mirrors the physical FCU panel) ───────────────────────
         # Speed section
@@ -152,11 +227,19 @@ class Aircraft:
             self.fcu_sel_mach = round(max(0.10, min(0.99, float(patch["fcu_sel_mach"]))), 3)
             self.fcu_spd_managed = False
             self._update_spd_mode()
+            # Sync: convert Mach → target IAS at current altitude
+            _atm = isa_atmosphere(self.altitude)
+            _tas = self.fcu_sel_mach * _atm["sos_kt"]
+            self.fcu_sel_spd = int(round(max(100, min(400, _tas * math.sqrt(_atm["rho"] / _ISA_RHO0)))))
 
         if "fcu_sel_spd" in patch:
             self.fcu_sel_spd = int(max(100, min(400, patch["fcu_sel_spd"])))
             self.fcu_spd_managed = False
             self._update_spd_mode()
+            # Sync: convert target IAS → Mach at current altitude
+            _atm = isa_atmosphere(self.altitude)
+            _tas = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / _atm["rho"])
+            self.fcu_sel_mach = round(max(0.10, min(0.99, _tas / _atm["sos_kt"])), 3)
 
         # ── LOC ─────────────────────────────────────────────────────────────
         if "loc_armed" in patch:
@@ -209,14 +292,14 @@ class Aircraft:
         # ── ALT PULL (commits fcu_sel_alt and starts climb/descent) ─────────
         if patch.get("alt_pull"):
             self.sel_alt = self.fcu_sel_alt
-            rate = abs(self.fcu_sel_vs) if self.fcu_sel_vs != 0 else 1000.0
+            self._alt_capture_vs = None
             if self.altitude < self.sel_alt - 50:
-                self.vs = rate
-                self.alt_mode = "CLB"
+                self.vs = 0.0       # physics computes VS on first update() tick
+                self.alt_mode = "OP CLB"
                 self._vs_managed_override = True
             elif self.altitude > self.sel_alt + 50:
-                self.vs = -rate
-                self.alt_mode = "DES"
+                self.vs = 0.0       # physics computes VS on first update() tick
+                self.alt_mode = "OP DES"
                 self._vs_managed_override = True
             else:
                 self.vs = 0.0
@@ -225,11 +308,12 @@ class Aircraft:
         # ── V/S PULL (commits target alt and starts climb/descent at fcu_sel_vs) ─
         if patch.get("vs_pull"):
             self.sel_alt = self.fcu_sel_alt
+            self._alt_capture_vs = None
             if self.fcu_sel_vs != 0:
                 self.vs = self.fcu_sel_vs
                 self.fcu_vs_managed = False
                 self._vs_managed_override = True
-                self.alt_mode = "CLB" if self.vs > 0 else "DES"
+                self.alt_mode = "V/S"
             else:
                 self.vs = 0.0
                 self.alt_mode = "ALT"
@@ -255,6 +339,7 @@ class Aircraft:
             direction = 1 if self.vs > 0 else -1
             self._leveloff_target = round((self.altitude + direction * 100) / 100) * 100
             self.fcu_sel_vs = 0.0
+            self._alt_capture_vs = None
             # Clear the override flag so the fcu_sel_vs:0 in the same patch
             # does not immediately zero vs before _leveloff_target is reached
             self._vs_managed_override = False
@@ -282,6 +367,7 @@ class Aircraft:
                 self.fcu_sel_vs = 0.0
                 self.vs = 0.0
                 self._vs_managed_override = False
+                self._alt_capture_vs = None
                 self.alt_mode = "ALTCRZ" if self.phase == "CRUISE" else "ALT"
 
         # ── APPR ────────────────────────────────────────────────────────────
@@ -299,6 +385,46 @@ class Aircraft:
                 self.spd_mode = f".{int(self.fcu_sel_mach * 1000):03d}"
             else:
                 self.spd_mode = f"{self.fcu_sel_spd}KT"
+
+    # ── Thrust helpers ─────────────────────────────────────────────────────
+
+    def _compute_drag(self) -> float:
+        """Drag force [N] at current TAS and altitude."""
+        atm  = isa_atmosphere(self.altitude)
+        V_ms = self.tas / 1.94384                          # kt → m/s
+        q    = 0.5 * atm["rho"] * V_ms ** 2               # dynamic pressure
+        CL   = (A320_MASS_KG * A320_G) / max(q * A320_WING_S, 1.0)
+        CD   = A320_CD0 + CL ** 2 / (math.pi * A320_AR * A320_OSWALD)
+        return q * A320_WING_S * CD
+
+    def _thrust_from_n1(self) -> float:
+        """Total thrust [N] produced at current N1 and altitude."""
+        atm   = isa_atmosphere(self.altitude)
+        t_max = A320_T_MAX_SL_N * A320_N_ENGINES * (atm["rho"] / _ISA_RHO0) ** 0.6
+        if self.n1 <= A320_N1_IDLE:
+            frac = 0.04
+        else:
+            f    = (self.n1 - A320_N1_IDLE) / (100.0 - A320_N1_IDLE)
+            frac = 0.04 + 0.96 * f ** 2
+        return t_max * frac
+
+    def _n1_for_level_mach(self) -> float:
+        """N1 [%] required to maintain current Mach in level flight."""
+        D     = self._compute_drag()
+        atm   = isa_atmosphere(self.altitude)
+        t_max = A320_T_MAX_SL_N * A320_N_ENGINES * (atm["rho"] / _ISA_RHO0) ** 0.6
+        frac  = D / max(t_max, 1.0)
+        if frac <= 0.04:
+            return A320_N1_IDLE
+        f = math.sqrt(max(0.0, (frac - 0.04) / 0.96))
+        return min(A320_N1_CLB, A320_N1_IDLE + f * (100.0 - A320_N1_IDLE))
+
+    def _compute_vs(self, thrust_n: float) -> float:
+        """Vertical speed [FPM] from thrust–drag energy balance."""
+        D         = self._compute_drag()
+        W         = A320_MASS_KG * A320_G
+        sin_gamma = max(-0.35, min(0.35, (thrust_n - D) / W))
+        return self.tas * 101.269 * sin_gamma    # kt × 101.269 → FPM
 
     # ──────────────────────────────────────────────────────────────────────
     def update(self, dt: float):
@@ -324,6 +450,27 @@ class Aircraft:
                 self.vs       = -700.0
                 self.pitch    = -3.0
 
+        # ── N1 spool — target depends on vertical mode ───────────────────────
+        if self.alt_mode == "OP DES":
+            n1_target = A320_N1_IDLE
+        elif self.alt_mode == "OP CLB":
+            n1_target = A320_N1_CLB
+        else:
+            n1_target = self._n1_for_level_mach()
+
+        n1_err = n1_target - self.n1
+        self.n1 = round(
+            max(A320_N1_MIN, min(100.0, self.n1 + max(-4.0, min(4.0, n1_err)) * dt)),
+            1,
+        )
+
+        # ── Physics VS for OP CLB / OP DES (outside capture zone) ───────────
+        if (self.alt_mode in ("OP DES", "OP CLB")
+                and self._vs_managed_override
+                and self._alt_capture_vs is None):
+            thrust = self._thrust_from_n1()
+            self.vs = round(self._compute_vs(thrust), 1)
+
         # ── Altitude ─────────────────────────────────────────────────────────
         if self.phase != "CRUISE" or self._vs_managed_override:
             self.altitude += self.vs * (dt / 60.0)
@@ -339,26 +486,50 @@ class Aircraft:
                 self._vs_managed_override = False
                 self._leveloff_target = None
 
-        # Level off at sel_alt (pilot-selected target)
-        elif (self.vs < 0 and self.altitude <= self.sel_alt) or \
-             (self.vs > 0 and self.altitude >= self.sel_alt):
-            self.altitude = self.sel_alt
-            self.vs       = 0.0
-            self.fcu_sel_vs = 0.0
-            self.alt_mode = "ALT"
-            self._vs_managed_override = False
-            self.fcu_vs_managed = True
+        # Altitude capture — smooth deceleration toward sel_alt
+        elif self._vs_managed_override and self.vs != 0:
+            remaining = abs(self.sel_alt - self.altitude)
 
-        # ── Actual speed: slew toward fcu_sel_spd at 10 kt/NM ───────────────
-        dist_nm = (self.actual_spd / 3600.0) * dt
-        max_change = 10.0 * dist_nm
-        error = self.fcu_sel_spd - self.actual_spd
-        self.actual_spd += max(-max_change, min(max_change, error))
-        self.actual_spd = round(max(50.0, self.actual_spd), 1)
+            # Overshot or arrived — hard stop
+            if (self.vs < 0 and self.altitude <= self.sel_alt) or \
+               (self.vs > 0 and self.altitude >= self.sel_alt):
+                self.altitude = self.sel_alt
+                self.vs = 0.0
+                self.fcu_sel_vs = 0.0
+                self.alt_mode = "ALT"
+                self._vs_managed_override = False
+                self.fcu_vs_managed = True
+                self._alt_capture_vs = None
 
-        self.tas = self.actual_spd
+            else:
+                # Enter capture zone?
+                capture_ft = max(abs(self._alt_capture_vs or self.vs) * 0.05, 50.0)
+
+                if remaining <= capture_ft:
+                    if self._alt_capture_vs is None:
+                        self._alt_capture_vs = self.vs
+                        capture_ft = max(abs(self._alt_capture_vs) * 0.05, 50.0)
+                    self.alt_mode = "ALT*"
+                    ratio = remaining / capture_ft
+                    # Scale VS down, minimum 50 FPM so we always reach target
+                    self.vs = math.copysign(
+                        max(abs(self._alt_capture_vs) * ratio, 50.0),
+                        self._alt_capture_vs,
+                    )
+                else:
+                    self._alt_capture_vs = None
+
+        # ── Speed: ISA atmosphere → Mach → TAS → IAS ────────────────────────
+        # Mach is held at the commanded value (no thrust dynamics yet).
+        # TAS and IAS update realistically as altitude changes.
+        self.mach = self.fcu_sel_mach
+        _atm = isa_atmosphere(self.altitude)
+        self.tas  = round(self.mach * _atm["sos_kt"], 1)
+        self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
+        self.actual_spd = self.ias
+
         wind_comp = self.wind_speed * math.cos(to_rad(self.wind_dir - self.track))
-        self.gs   = max(self.tas + wind_comp, 50.0)
+        self.gs   = round(max(self.tas + wind_comp, 50.0), 1)
 
         # ── Heading: turn toward fcu_sel_hdg at 3°/second ───────────────────
         hdg_error = (self.fcu_sel_hdg - self.heading + 540) % 360 - 180
@@ -422,15 +593,18 @@ class Aircraft:
             "lon": round(self.lon, 5),
             "altitude": round(self.altitude),
             "sel_alt":  int(self.sel_alt),
-            "mach":     round(self.mach, 3),
-            "tas":      round(self.tas),
-            "actual_spd": round(self.actual_spd, 1),
-            "gs":       round(self.gs),
+            "mach":         round(self.mach, 3),
+            "tas":          round(self.tas),
+            "ias":          round(self.ias),
+            "actual_spd":   round(self.actual_spd, 1),
+            "gs":           round(self.gs),
+            "crossover_ft": round(A320_CROSSOVER_FT),
             "pitch":    round(self.pitch, 1),
             "roll":     round(self.roll, 1),
             "heading":  round(self.heading, 1),
             "track":    round(self.track, 1),
             "vs":       round(self.vs),
+            "n1":       round(self.n1, 1),
             "wind_dir": round(self.wind_dir),
             "wind_speed": round(self.wind_speed),
             # ── AP / mode strings (read by PFD) ────────────────────────────

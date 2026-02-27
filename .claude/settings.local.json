@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"\nfrom backend.simulation import isa_atmosphere, _crossover_ft, A320_CROSSOVER_FT, A320_MASS_KG, Aircraft\nimport math\n\n# ISA test at FL270\natm = isa_atmosphere\\(27000\\)\nprint\\(f'FL270 ISA:  T={atm[\\\\\"T\\\\\"]:.1f}K  rho={atm[\\\\\"rho\\\\\"]:.4f}kg/m³  SoS={atm[\\\\\"sos_kt\\\\\"]:.1f}kt'\\)\n\n# Speed conversion\nmach = 0.788\ntas = mach * atm['sos_kt']\nias = tas * math.sqrt\\(atm['rho'] / 1.225\\)\nprint\\(f'M{mach} @ FL270:  TAS={tas:.1f}kt  IAS={ias:.1f}kt'\\)\n\n# Crossover altitude\nprint\\(f'Crossover alt \\(M0.78/300kt IAS\\): FL{round\\(A320_CROSSOVER_FT/100\\)*100:.0f} \\({A320_CROSSOVER_FT:.0f} ft\\)'\\)\nprint\\(f'A320 mass: {A320_MASS_KG:,} kg'\\)\n\n# Aircraft init test\nac = Aircraft\\(\\)\nprint\\(f'Aircraft init:  TAS={ac.tas}kt  IAS={ac.ias}kt  Mach={ac.mach}'\\)\n\")"
+    ]
+  }
+}

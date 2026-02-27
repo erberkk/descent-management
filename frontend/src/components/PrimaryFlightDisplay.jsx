@@ -33,10 +33,12 @@ const SPD_PX_MACH = 280   // total tape width for Mach 0…1.2
 const DEFAULT = {
   pitch: 2.5, roll: 0,
   altitude: 27000, sel_alt: 27000, vs: 0,
-  mach: 0.788, tas: 300, gs: 300,
+  mach: 0.788, tas: 465, ias: 304, gs: 445,
   spd_mode: 'MACH', alt_mode: 'ALTCRZ', lat_mode: 'NAV',
   ap_num: 2, fd1: true, fd2: true, athr: true,
   baro_std: true, baro_value: 1013.25,
+  crossover_ft: 27000,
+  n1: 70.0,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -117,76 +119,198 @@ function render(ctx, s, selAlt, selVs, squareY) {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
 
-  drawModeAnnunciators(ctx, s)
+  drawFMA(ctx, s)
+  drawEngineGauges(ctx, s.n1 ?? 70)
   drawAPStatus(ctx, s)
-  drawLeftBox(ctx, s.actual_spd ?? s.tas ?? 300)
+  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788)
   drawAttitudeIndicator(ctx)
   drawCentreHorizonLine(ctx, squareY ?? REF_CY)
   drawStaticRefLines(ctx)
   drawHorizonArc(ctx)
-  drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, selVs ?? s.vs ?? 0)
+  drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, s.vs ?? 0)
   drawHeadingTape(ctx, s.heading ?? 87)
   drawBaroIndicator(ctx, s.baro_std, s.baro_value)
 }
 
-// Armed modes end with '*' → render in blue; active modes → green
-function modeColor(modeStr) {
-  if (!modeStr) return '#00FF00'
-  return modeStr.endsWith('*') ? '#00BFFF' : '#00FF00'
-}
-function modeLabel(modeStr) {
-  return (modeStr ?? '').replace('*', '')
-}
+// ── FMA — Flight Mode Annunciator ───────────────────────────────────────────
+//
+//  ┌──────────────┬──────────────┬──────────────┐  y=4
+//  │  A/THR       │   VERTICAL   │   LATERAL    │  active row (50px)
+//  │  ┌───────┐   │  ┌────────┐  │  ┌───────┐   │
+//  │  │ SPEED │   │  │OP DES  │  │  │  HDG  │   │
+//  │  └───────┘   │  └────────┘  │  └───────┘   │
+//  │              │  -1800       │              │
+//  ├──────────────┼──────────────┼──────────────┤  y=54
+//  │              │     ALT      │              │  armed row (22px)
+//  └──────────────┴──────────────┴──────────────┘  y=76
+//
+function drawFMA(ctx, s) {
+  const FX = AI_X          // 78
+  const FY = 4
+  const FW = AI_W          // 340
+  const FH = 72
+  const COL = FW / 3       // ≈113
+  const ACTIVE_H = 50
+  const ARMED_H  = FH - ACTIVE_H   // 22
 
-// ── Mode annunciators (top bar) ─────────────────────────────────────────────
-function drawModeAnnunciators(ctx, s) {
-  const y = 18
-  ctx.font = 'bold 14px monospace'
-  ctx.textAlign = 'center'
+  // Background
+  ctx.fillStyle = '#0c0c0c'
+  ctx.fillRect(FX, FY, FW, FH)
 
-  // Speed mode
-  const spd = s.spd_mode ?? 'MACH'
-  ctx.fillStyle = modeColor(spd)
-  ctx.fillText(modeLabel(spd), AI_X + 60, y)
-
-  // Separators
-  ctx.fillStyle = '#555'
-  ctx.fillText('|', AI_X + 120, y)
-  ctx.fillText('|', AI_X + 240, y)
-
-  // Altitude mode
-  const alt = s.alt_mode ?? 'ALTCRZ'
-  ctx.fillStyle = modeColor(alt)
-  ctx.fillText(modeLabel(alt), AI_X + 180, y)
-
-  // Lateral mode
-  const lat = s.lat_mode ?? 'NAV'
-  ctx.fillStyle = modeColor(lat)
-  ctx.fillText(modeLabel(lat), AI_X + 300, y)
-
-  // Underline bar
-  ctx.strokeStyle = '#333'
+  // Outer border
+  ctx.strokeStyle = '#2a2a2a'
   ctx.lineWidth = 1
+  ctx.strokeRect(FX, FY, FW, FH)
+
+  // Column dividers
+  for (let i = 1; i <= 2; i++) {
+    ctx.beginPath()
+    ctx.moveTo(FX + COL * i, FY)
+    ctx.lineTo(FX + COL * i, FY + FH)
+    ctx.stroke()
+  }
+
+  // Active / armed row separator
   ctx.beginPath()
-  ctx.moveTo(AI_X, y + 6)
-  ctx.lineTo(AI_X + AI_W, y + 6)
+  ctx.moveTo(FX, FY + ACTIVE_H)
+  ctx.lineTo(FX + FW, FY + ACTIVE_H)
   ctx.stroke()
+
+  // Column centre X values
+  const CX = [FX + COL * 0.5, FX + COL * 1.5, FX + COL * 2.5]
+
+  // Draw a bordered mode box in the active row
+  function modeBox(col, label, color) {
+    ctx.font = 'bold 13px monospace'
+    ctx.textAlign = 'center'
+    const tw  = ctx.measureText(label).width
+    const bw  = Math.max(tw + 14, 46)
+    const bh  = 22
+    const bx  = CX[col] - bw / 2
+    const by  = FY + 13
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(bx, by, bw, bh)
+    ctx.fillStyle = color
+    ctx.fillText(label, CX[col], by + bh - 5)
+  }
+
+  // Draw small armed-mode text in the lower row
+  function armedText(col, label) {
+    ctx.font = '11px monospace'
+    ctx.fillStyle = '#00BFFF'
+    ctx.textAlign = 'center'
+    ctx.fillText(label, CX[col], FY + ACTIVE_H + ARMED_H / 2 + 4)
+  }
+
+  const altMode = s.alt_mode ?? 'ALTCRZ'
+  const latMode = s.lat_mode ?? 'HDG'
+
+  // ── Col 0 — A/THR ────────────────────────────────────────────────────────
+  if (s.athr) {
+    modeBox(0, 'SPEED', '#00FF00')
+  }
+
+  // ── Col 1 — Vertical mode ────────────────────────────────────────────────
+  const isCapture = altMode === 'ALT*'
+  const vColor    = isCapture ? '#00BFFF' : '#00FF00'
+  modeBox(1, altMode, vColor)
+
+  // V/S sub-value (FPM) shown below the mode box
+  if (altMode === 'V/S') {
+    const vs = s.vs ?? 0
+    ctx.font = '11px monospace'
+    ctx.fillStyle = '#00FF00'
+    ctx.textAlign = 'center'
+    ctx.fillText((vs >= 0 ? '+' : '') + Math.round(vs), CX[1], FY + 43)
+  }
+
+  // ALT armed when actively climbing / descending toward target
+  if (['OP CLB', 'OP DES', 'V/S'].includes(altMode)) {
+    armedText(1, 'ALT')
+  }
+
+  // ── Col 2 — Lateral mode ─────────────────────────────────────────────────
+  const lIsArmed = latMode.endsWith('*')
+  const lColor   = lIsArmed ? '#00BFFF' : '#00FF00'
+  modeBox(2, latMode.replace('*', ''), lColor)
 }
 
-// ── AP / FD / A-THR status (top right) ─────────────────────────────────────
+// ── N1 engine gauges — two circular dials between FMA and AI ────────────────
+//  FMA bottom: y=76   AI top: y=143   → 67 px gap
+//  cy=109  R=22  fits with ~11 px margin each side
+function drawEngineGauges(ctx, n1) {
+  const n1Val   = Math.max(0, Math.min(100, n1 ?? 70))
+  const cy      = 109
+  const R       = 22
+  const cx1     = 183    // left gauge (ENG 1)
+  const cx2     = 313    // right gauge (ENG 2)
+  // Arc geometry: 270° sweep, start at 135° canvas (≈7:30 clock position)
+  const START   = Math.PI * 0.75      // 135°  in radians
+  const SWEEP   = Math.PI * 1.5       // 270°
+
+  for (const [cx, label] of [[cx1, 'E1'], [cx2, 'E2']]) {
+    // Background arc
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, START, START + SWEEP)
+    ctx.strokeStyle = '#2a2a2a'
+    ctx.lineWidth = 5
+    ctx.stroke()
+
+    // Tick marks at 0 / 25 / 50 / 75 / 100 %
+    ctx.lineWidth = 1
+    for (let pct = 0; pct <= 100; pct += 25) {
+      const a  = START + SWEEP * pct / 100
+      const r0 = R - 6
+      ctx.beginPath()
+      ctx.moveTo(cx + r0 * Math.cos(a), cy + r0 * Math.sin(a))
+      ctx.lineTo(cx + (R + 3) * Math.cos(a), cy + (R + 3) * Math.sin(a))
+      ctx.strokeStyle = '#555'
+      ctx.stroke()
+    }
+
+    // Value arc — green below 92 %, amber at/above 92 %
+    const arcColor = n1Val >= 92 ? '#FFA500' : '#00CC00'
+    const endAngle = START + SWEEP * n1Val / 100
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, START, endAngle)
+    ctx.strokeStyle = arcColor
+    ctx.lineWidth = 5
+    ctx.stroke()
+
+    // N1 value text
+    ctx.font = 'bold 11px monospace'
+    ctx.fillStyle = n1Val >= 92 ? '#FFA500' : '#FFFFFF'
+    ctx.textAlign = 'center'
+    ctx.fillText(n1Val.toFixed(1), cx, cy + 4)
+
+    // Engine label (small, inside top area)
+    ctx.font = '9px monospace'
+    ctx.fillStyle = '#888'
+    ctx.fillText(label, cx, cy - R - 2)
+  }
+
+  // "N1 %" label centred between the two gauges
+  ctx.font = '9px monospace'
+  ctx.fillStyle = '#AAA'
+  ctx.textAlign = 'center'
+  ctx.fillText('N1 %', (cx1 + cx2) / 2, cy + 4)
+}
+
+// ── AP / FD / A-THR status (right of FMA, top-right corner) ────────────────
 function drawAPStatus(ctx, s) {
   const x = ALT_X + ALT_W - 4
   ctx.textAlign = 'right'
-  ctx.font = 'bold 13px monospace'
+  ctx.font = 'bold 12px monospace'
 
   ctx.fillStyle = '#00FFFF'
-  ctx.fillText(`AP${s.ap_num ?? 2}`, x, 18)
+  ctx.fillText(`AP${s.ap_num ?? 2}`, x, 84)
 
   ctx.fillStyle = '#00FFFF'
-  ctx.fillText(`${s.fd1 ? '1' : '-'} FD ${s.fd2 ? '2' : '-'}`, x, 34)
+  ctx.fillText(`${s.fd1 ? '1' : '-'} FD ${s.fd2 ? '2' : '-'}`, x, 100)
 
-  ctx.fillStyle = '#00FFFF'
-  ctx.fillText('A/THR', x, 50)
+  ctx.fillStyle = s.athr ? '#00FFFF' : '#888'
+  ctx.fillText('A/THR', x, 116)
 }
 
 // ── Attitude Indicator ──────────────────────────────────────────────────────
@@ -366,8 +490,8 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
   drawVSI(ctx, vs, cx + ALT_W + 4, cy)
 }
 
-// ── Left speed tape (TAS) ────────────────────────────────────────────────────
-function drawLeftBox(ctx, tas) {
+// ── Left speed tape (IAS) + Mach readout ─────────────────────────────────────
+function drawLeftBox(ctx, ias, mach) {
   const x = LB_X
   const y = AI_Y
   const w = LB_W
@@ -389,27 +513,30 @@ function drawLeftBox(ctx, tas) {
   ctx.rect(x, y, w, h)
   ctx.clip()
 
-  // Draw speed ticks and labels every 10 kt
-  const firstSpd = Math.ceil((tas - visibleRange / 2) / 10) * 10
-  for (let spd = firstSpd; spd <= tas + visibleRange / 2; spd += 10) {
-    const yPos = centreY - (spd - tas) * pxPerKt
+  // IAS ticks and labels every 10 kt
+  const firstSpd = Math.ceil((ias - visibleRange / 2) / 10) * 10
+  for (let spd = firstSpd; spd <= ias + visibleRange / 2; spd += 10) {
+    const yPos = centreY - (spd - ias) * pxPerKt
+    const isMajor = spd % 20 === 0
 
     ctx.strokeStyle = '#888'
-    ctx.lineWidth = 1
+    ctx.lineWidth = isMajor ? 1.5 : 1
     ctx.beginPath()
     ctx.moveTo(x + w, yPos)
-    ctx.lineTo(x + w - 10, yPos)
+    ctx.lineTo(x + w - (isMajor ? 12 : 7), yPos)
     ctx.stroke()
 
-    ctx.font = '13px monospace'
-    ctx.fillStyle = '#DDDDDD'
-    ctx.textAlign = 'right'
-    ctx.fillText(String(spd), x + w - 12, yPos + 5)
+    if (isMajor) {
+      ctx.font = '12px monospace'
+      ctx.fillStyle = '#DDDDDD'
+      ctx.textAlign = 'right'
+      ctx.fillText(String(spd), x + w - 14, yPos + 4)
+    }
   }
 
   ctx.restore()
 
-  // Current speed pointer box (centre)
+  // ── IAS pointer box (centre) ──
   const pY = centreY
   ctx.fillStyle = '#222'
   ctx.strokeStyle = '#FFD700'
@@ -419,12 +546,25 @@ function drawLeftBox(ctx, tas) {
   ctx.fill()
   ctx.stroke()
 
-  // Speed readout
-  const spdStr = String(Math.round(tas)).padStart(3, ' ')
   ctx.font = 'bold 15px monospace'
   ctx.fillStyle = '#FFFFFF'
   ctx.textAlign = 'center'
-  ctx.fillText(spdStr, x + w / 2, pY + 5)
+  ctx.fillText(String(Math.round(ias)).padStart(3, ' '), x + w / 2, pY + 5)
+
+  // ── Mach readout below IAS tape ──
+  const machStr = '.' + String(Math.round((mach ?? 0.788) * 1000)).padStart(3, '0')
+  const mY = y + h + 4
+  ctx.fillStyle = '#001a00'
+  ctx.strokeStyle = '#336633'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  roundRect(ctx, x + 2, mY, w - 4, 18, 2)
+  ctx.fill()
+  ctx.stroke()
+  ctx.font = 'bold 12px monospace'
+  ctx.fillStyle = '#00FF88'
+  ctx.textAlign = 'center'
+  ctx.fillText(machStr, x + w / 2, mY + 13)
 }
 
 function drawVSI(ctx, vs, x, y) {
@@ -476,6 +616,27 @@ function drawVSI(ctx, vs, x, y) {
   ctx.moveTo(x, centreY)
   ctx.lineTo(x + w, centreY)
   ctx.stroke()
+
+  // Digital FPM readout next to pointer (only when VS ≠ 0)
+  if (vs !== 0) {
+    const vsY       = centreY - vsClamp * scale
+    const labelY    = Math.max(y + 8, Math.min(y + h - 8, vsY))
+    const fpmStr    = (vs > 0 ? '+' : '') + Math.round(vs)
+    const boxW      = 38
+    const boxH      = 14
+    const boxX      = x - boxW - 2
+    ctx.fillStyle   = '#001a00'
+    ctx.strokeStyle = '#00CC00'
+    ctx.lineWidth   = 1
+    ctx.beginPath()
+    roundRect(ctx, boxX, labelY - boxH / 2, boxW, boxH, 2)
+    ctx.fill()
+    ctx.stroke()
+    ctx.font        = 'bold 9px monospace'
+    ctx.fillStyle   = '#00FF00'
+    ctx.textAlign   = 'right'
+    ctx.fillText(fpmStr, boxX + boxW - 3, labelY + 3)
+  }
 }
 
 // ── Heading tape (horizontal at bottom) ─────────────────────────────────────
