@@ -223,8 +223,19 @@ export function FCU({ fcu, patch }) {
         <div className="fcu-section alt-section">
           <div className="fcu-knob-col">
             <div className="fcu-spd-display fcu-alt-display">{String(fcu.fcu_sel_alt).padStart(5, '0')}</div>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.min(fcu.fcu_sel_alt + 1000, 49000) })}>▲</button>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.max(fcu.fcu_sel_alt - 1000, 0) })}>▼</button>
+            <div className="fcu-alt-btn-row">
+              <div className="fcu-alt-push-col">
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.min(fcu.fcu_sel_alt + 1000, 49000) })}>▲</button>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_alt: Math.max(fcu.fcu_sel_alt - 1000, 0) })}>▼</button>
+              </div>
+              <button
+                className="fcu-pull-btn"
+                onClick={() => patch({ alt_pull: true })}
+                title="ALT PULL"
+              >
+                <span>PULL</span>
+              </button>
+            </div>
             <div className="fcu-knob-label">ALT</div>
           </div>
         </div>
@@ -249,8 +260,19 @@ export function FCU({ fcu, patch }) {
             <div className="fcu-spd-display fcu-vs-display">
               {fcu.fcu_sel_vs >= 0 ? '+' : ''}{fcu.fcu_sel_vs}
             </div>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.min(fcu.fcu_sel_vs + 100, 6000) })}>▲</button>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.max(fcu.fcu_sel_vs - 100, -6000) })}>▼</button>
+            <div className="fcu-vs-btn-row">
+              <div className="fcu-alt-push-col">
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.min(fcu.fcu_sel_vs + 100, 6000) })}>▲</button>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.max(fcu.fcu_sel_vs - 100, -6000) })}>▼</button>
+              </div>
+              <button
+                className="fcu-pull-btn"
+                onClick={() => patch({ vs_pull: true })}
+                title="V/S PULL — engage V/S mode toward target alt"
+              >
+                <span>PULL</span>
+              </button>
+            </div>
             <div className="fcu-knob-label">V/S</div>
           </div>
         </div>

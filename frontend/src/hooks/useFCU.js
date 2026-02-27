@@ -40,7 +40,7 @@ export function useFCU() {
       fcu_sel_hdg:      ws.fcu_sel_hdg      ?? DEFAULTS.fcu_sel_hdg,
       fcu_sel_vs:       ws.fcu_sel_vs       ?? DEFAULTS.fcu_sel_vs,
       fcu_vs_managed:   ws.fcu_vs_managed   ?? DEFAULTS.fcu_vs_managed,
-      fcu_sel_alt:      ws.sel_alt          ?? DEFAULTS.fcu_sel_alt,
+      fcu_sel_alt:      ws.fcu_sel_alt       ?? ws.sel_alt ?? DEFAULTS.fcu_sel_alt,
       fcu_alt_step:     ws.fcu_alt_step     ?? DEFAULTS.fcu_alt_step,
       metric_alt:       ws.metric_alt       ?? DEFAULTS.metric_alt,
       exped_active:     ws.exped_active     ?? DEFAULTS.exped_active,

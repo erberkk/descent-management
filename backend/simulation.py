@@ -109,6 +109,7 @@ class Aircraft:
         self.fcu_sel_hdg      = 87.0
 
         # Altitude section
+        self.fcu_sel_alt     = 27000.0  # FCU knob display value (pending target)
         self.fcu_alt_step    = 1000     # 100 or 1000
         self.metric_alt      = False
         self.exped_active    = False
@@ -200,11 +201,15 @@ class Aircraft:
             self.athr_engaged = bool(patch["athr_engaged"])
             self.athr = self.athr_engaged
 
-        # ── ALT knob ────────────────────────────────────────────────────────
+        # ── ALT knob (display only — does NOT start climb/descent) ──────────
         if "fcu_sel_alt" in patch:
-            raw  = float(patch["fcu_sel_alt"])
-            self.sel_alt = max(0.0, min(49000.0, round(raw / 1000) * 1000))
-            rate = abs(self.fcu_sel_vs) if self.fcu_sel_vs != 0 else 1500.0
+            raw = float(patch["fcu_sel_alt"])
+            self.fcu_sel_alt = max(100.0, min(49900.0, float(raw)))
+
+        # ── ALT PULL (commits fcu_sel_alt and starts climb/descent) ─────────
+        if patch.get("alt_pull"):
+            self.sel_alt = self.fcu_sel_alt
+            rate = abs(self.fcu_sel_vs) if self.fcu_sel_vs != 0 else 1000.0
             if self.altitude < self.sel_alt - 50:
                 self.vs = rate
                 self.alt_mode = "CLB"
@@ -213,6 +218,18 @@ class Aircraft:
                 self.vs = -rate
                 self.alt_mode = "DES"
                 self._vs_managed_override = True
+            else:
+                self.vs = 0.0
+                self.alt_mode = "ALT"
+
+        # ── V/S PULL (commits target alt and starts climb/descent at fcu_sel_vs) ─
+        if patch.get("vs_pull"):
+            self.sel_alt = self.fcu_sel_alt
+            if self.fcu_sel_vs != 0:
+                self.vs = self.fcu_sel_vs
+                self.fcu_vs_managed = False
+                self._vs_managed_override = True
+                self.alt_mode = "CLB" if self.vs > 0 else "DES"
             else:
                 self.vs = 0.0
                 self.alt_mode = "ALT"
@@ -246,14 +263,9 @@ class Aircraft:
         # ── V/S knob ────────────────────────────────────────────────────────
         if "fcu_sel_vs" in patch:
             self.fcu_sel_vs = max(-6000.0, min(6000.0, float(patch["fcu_sel_vs"])))
-            # If already climbing/descending, apply new rate immediately
-            if self._vs_managed_override and self.vs != 0:
-                # Preserve direction toward sel_alt
-                if self.altitude < self.sel_alt:
-                    self.vs = abs(self.fcu_sel_vs)
-                else:
-                    self.vs = -abs(self.fcu_sel_vs)
-            elif self.vs == 0 and self.fcu_sel_vs != 0:
+            # New V/S is only armed — it applies when V/S PULL is pressed.
+            # Exception: if currently level, resume toward sel_alt if pointed right way.
+            if self.vs == 0 and self.fcu_sel_vs != 0:
                 # Leveled off — resume if the dialled VS points toward sel_alt
                 alt_error = self.sel_alt - self.altitude
                 going_right_way = (self.fcu_sel_vs > 0 and alt_error > 50) or \
@@ -455,6 +467,7 @@ class Aircraft:
             "fcu_sel_hdg":      round(self.fcu_sel_hdg, 1),
             "fcu_sel_vs":       round(self.fcu_sel_vs),
             "fcu_vs_managed":   self.fcu_vs_managed,
+            "fcu_sel_alt":      int(self.fcu_sel_alt),
             "fcu_alt_step":     self.fcu_alt_step,
             "metric_alt":       self.metric_alt,
             "exped_active":     self.exped_active,

@@ -413,6 +413,41 @@
   gap: 5px;
 }
 
+/* ── ALT push/pull button layout ────────────────────────────────────────*/
+.fcu-alt-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fcu-alt-push-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── PULL circular button ────────────────────────────────────────────── */
+.fcu-pull-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%, #a0b0c0, #2a3840);
+  border: 2px solid #5599ff;
+  color: #5599ff;
+  font-family: 'Courier New', monospace;
+  font-size: 8px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 8px rgba(0,0,0,0.7), inset 0 1px rgba(255,255,255,0.1);
+  transition: filter 0.1s, box-shadow 0.1s;
+}
+.fcu-pull-btn:hover  { filter: brightness(1.2); }
+.fcu-pull-btn:active { box-shadow: 0 1px 3px rgba(0,0,0,0.7); }
+
 /* ── ALT section layout ──────────────────────────────────────────────────*/
 .fcu-alt-step-row {
   display: flex;
@@ -426,6 +461,13 @@
   text-align: center;
   line-height: 1.3;
   letter-spacing: 0.3px;
+}
+
+/* ── V/S button row (up/down + PULL) ────────────────────────────────────*/
+.fcu-vs-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ── V/S section layout ──────────────────────────────────────────────────*/

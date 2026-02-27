@@ -46,6 +46,7 @@ class FCUPatch(BaseModel):
     athr_engaged:     Optional[bool]  = None
     loc_armed:        Optional[bool]  = None
     appr_armed:       Optional[bool]  = None
+    vs_pull:          Optional[bool]  = None
 
 
 # ── Simulation loop ────────────────────────────────────────────────────────
