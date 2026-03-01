@@ -1,0 +1,5 @@
+
+If you increase your selected Mach (e.g., M.78 → M.82), the crossover altitude goes down — because it takes longer (lower altitude, denser air) for the IAS to catch up to the higher TAS that Mach represents.
+If you decrease your selected Mach (e.g., M.78 → M.74), the crossover altitude goes up — because the IAS reaches that lower TAS sooner, at a higher altitude.
+Same logic applies if you change the IAS target — a higher IAS target raises the crossover, a lower one lowers it.
+The crossover altitude is simply where those two values meet in terms of TAS, so change either one and the meeting point shifts.

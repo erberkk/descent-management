@@ -19,7 +19,7 @@ export default function App() {
 
       {/* FCU panel sits above the display unit */}
       <div className="fcu-wrapper">
-        <FCU fcu={fcu} patch={patch} />
+        <FCU fcu={fcu} patch={patch} state={state} />
       </div>
 
       {/* Display unit (ND + PFD) */}

@@ -208,7 +208,7 @@ function drawFMA(ctx, s) {
 
   // ── Col 0 — A/THR ────────────────────────────────────────────────────────
   if (s.athr) {
-    modeBox(0, 'SPEED', '#00FF00')
+    modeBox(0, s.spd_mode ?? 'SPEED', '#00FF00')
   }
 
   // ── Col 1 — Vertical mode ────────────────────────────────────────────────

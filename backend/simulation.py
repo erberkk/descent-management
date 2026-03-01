@@ -90,8 +90,14 @@ A320_MASS_KG   = 65_000      # fixed operating mass [kg]  (user-specified)
 A320_WING_S    = 122.6       # reference wing area [m²]
 A320_AR        = 9.4         # wing aspect ratio
 A320_OSWALD    = 0.85        # Oswald efficiency factor
-A320_CD0       = 0.024       # zero-lift drag coefficient (clean cruise)
+A320_CD0       = 0.022       # base zero-lift drag coefficient
 A320_G         = 9.80665     # gravitational acceleration [m/s²]
+
+# Altitude-dependent CD0 increase (Reynolds number / compressibility correction)
+A320_CD0_ALT_REF = 27.0     # kft — CD0 starts increasing above this altitude
+A320_CD0_ALT_K   = 0.0098   # CD0 increment at FL350
+A320_CD0_ALT_POW = 2.0      # power law exponent
+A320_CD0_ALT_NORM = (35.0 - A320_CD0_ALT_REF) ** A320_CD0_ALT_POW  # normalizer
 
 # Thrust model — CFM56-5B4 (approximate)
 A320_T_MAX_SL_N = 120_000   # N per engine, sea-level static
@@ -99,6 +105,10 @@ A320_N_ENGINES  = 2
 A320_N1_IDLE    = 24.0      # % N1 at ground/flight IDLE
 A320_N1_CLB     = 88.0      # % N1 at CLB (climb) thrust
 A320_N1_MIN     = 18.0      # % N1 absolute minimum
+
+# Calibrated idle thrust model (decoupled from max thrust lapse)
+A320_T_IDLE_SL  = 12_000    # N total idle thrust at sea level (both engines)
+A320_IDLE_EXP   = 1.3       # density exponent for idle thrust lapse
 
 # Crossover altitude for M0.78 / 300 kt IAS in standard ISA  →  ≈ FL270
 A320_CROSSOVER_FT = _crossover_ft(0.78, 300)
@@ -111,8 +121,8 @@ class Aircraft:
         self.lon = -113.00
 
         # ── Altitude ────────────────────────────────────────────────────────
-        self.altitude = 27000.0
-        self.sel_alt  = 27000.0       # driven by FCU
+        self.altitude = 35000.0
+        self.sel_alt  = 35000.0       # driven by FCU
 
         # ── Attitude ────────────────────────────────────────────────────────
         self.pitch = 2.5
@@ -128,7 +138,7 @@ class Aircraft:
         self.wind_speed = 22.0
 
         # ── Speeds (ISA-derived at initial altitude) ─────────────────────────
-        self.mach = 0.788
+        self.mach = 0.77
         _atm      = isa_atmosphere(self.altitude)
         self.tas  = round(self.mach * _atm["sos_kt"], 1)
         self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
@@ -165,17 +175,21 @@ class Aircraft:
 
         # ── Phase control ────────────────────────────────────────────────────
         self.phase           = "CRUISE"
-        self.descent_trigger = 60.0
         self._vs_managed_override = False   # True when FCU VS knob is active
         self._leveloff_target     = None    # Temporary stop altitude from LVL OFF
+        self._leveloff_capture_vs = None    # VS at moment level-off was pressed
         self._alt_capture_vs      = None    # VS at moment of entering capture zone
+        self._vs_transition_target = None   # Gradual VS transition target (FPM)
 
         # ── FCU state (mirrors the physical FCU panel) ───────────────────────
         # Speed section
         self.fcu_spd_managed  = True
         self.fcu_mach_mode    = True
-        self.fcu_sel_mach     = 0.788
-        self.fcu_sel_spd      = 300
+        self.fcu_sel_mach     = 0.77
+        self.fcu_sel_spd      = 260
+
+        # Dynamic crossover altitude (recomputed each tick)
+        self._crossover_ft    = _crossover_ft(0.77, 260)
 
         # Lateral section
         self.fcu_hdg_managed  = True
@@ -184,7 +198,7 @@ class Aircraft:
         self.fcu_sel_hdg      = 87.0
 
         # Altitude section
-        self.fcu_sel_alt     = 27000.0  # FCU knob display value (pending target)
+        self.fcu_sel_alt     = 35000.0  # FCU knob display value (pending target)
         self.fcu_alt_step    = 1000     # 100 or 1000
         self.metric_alt      = False
         self.exped_active    = False
@@ -226,20 +240,14 @@ class Aircraft:
         if "fcu_sel_mach" in patch:
             self.fcu_sel_mach = round(max(0.10, min(0.99, float(patch["fcu_sel_mach"]))), 3)
             self.fcu_spd_managed = False
+            self._crossover_ft = self._dynamic_crossover()
             self._update_spd_mode()
-            # Sync: convert Mach → target IAS at current altitude
-            _atm = isa_atmosphere(self.altitude)
-            _tas = self.fcu_sel_mach * _atm["sos_kt"]
-            self.fcu_sel_spd = int(round(max(100, min(400, _tas * math.sqrt(_atm["rho"] / _ISA_RHO0)))))
 
         if "fcu_sel_spd" in patch:
             self.fcu_sel_spd = int(max(100, min(400, patch["fcu_sel_spd"])))
             self.fcu_spd_managed = False
+            self._crossover_ft = self._dynamic_crossover()
             self._update_spd_mode()
-            # Sync: convert target IAS → Mach at current altitude
-            _atm = isa_atmosphere(self.altitude)
-            _tas = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / _atm["rho"])
-            self.fcu_sel_mach = round(max(0.10, min(0.99, _tas / _atm["sos_kt"])), 3)
 
         # ── LOC ─────────────────────────────────────────────────────────────
         if "loc_armed" in patch:
@@ -284,37 +292,68 @@ class Aircraft:
             self.athr_engaged = bool(patch["athr_engaged"])
             self.athr = self.athr_engaged
 
-        # ── ALT knob (display only — does NOT start climb/descent) ──────────
+        # ── ALT knob ───────────────────────────────────────────────────────
         if "fcu_sel_alt" in patch:
             raw = float(patch["fcu_sel_alt"])
             self.fcu_sel_alt = max(100.0, min(49900.0, float(raw)))
+            # In OP DES/CLB, knob turn updates the live target immediately
+            if self.alt_mode in ("OP DES", "OP CLB", "ALT*"):
+                self.sel_alt = self.fcu_sel_alt
+                self._alt_capture_vs = None
 
         # ── ALT PULL (commits fcu_sel_alt and starts climb/descent) ─────────
         if patch.get("alt_pull"):
             self.sel_alt = self.fcu_sel_alt
             self._alt_capture_vs = None
             if self.altitude < self.sel_alt - 50:
-                self.vs = 0.0       # physics computes VS on first update() tick
+                if self.alt_mode == "OP CLB":
+                    # Already climbing — just update target, physics continues
+                    pass
+                elif self.alt_mode == "V/S" and self.vs != 0:
+                    # Smooth ramp from current VS toward CLB thrust VS
+                    saved_n1 = self.n1
+                    self.n1 = A320_N1_CLB
+                    t = self._thrust_from_n1()
+                    self.n1 = saved_n1
+                    self._vs_transition_target = round(self._compute_vs(t), 1)
+                else:
+                    self.vs = 0.0
+                    self._vs_transition_target = None
                 self.alt_mode = "OP CLB"
                 self._vs_managed_override = True
             elif self.altitude > self.sel_alt + 50:
-                self.vs = 0.0       # physics computes VS on first update() tick
+                if self.alt_mode == "OP DES":
+                    # Already descending — just update target, physics continues
+                    pass
+                elif self.alt_mode == "V/S" and self.vs != 0:
+                    # Smooth ramp from current VS toward idle thrust VS
+                    saved_n1 = self.n1
+                    self.n1 = A320_N1_IDLE
+                    t = self._thrust_from_n1()
+                    self.n1 = saved_n1
+                    self._vs_transition_target = round(self._compute_vs(t), 1)
+                else:
+                    self.vs = 0.0
+                    self._vs_transition_target = None
                 self.alt_mode = "OP DES"
                 self._vs_managed_override = True
             else:
                 self.vs = 0.0
                 self.alt_mode = "ALT"
+                self._vs_transition_target = None
 
         # ── V/S PULL (commits target alt and starts climb/descent at fcu_sel_vs) ─
         if patch.get("vs_pull"):
             self.sel_alt = self.fcu_sel_alt
             self._alt_capture_vs = None
             if self.fcu_sel_vs != 0:
-                self.vs = self.fcu_sel_vs
+                # Gradual transition: don't snap self.vs, ramp toward target
+                self._vs_transition_target = self.fcu_sel_vs
                 self.fcu_vs_managed = False
                 self._vs_managed_override = True
                 self.alt_mode = "V/S"
             else:
+                self._vs_transition_target = None
                 self.vs = 0.0
                 self.alt_mode = "ALT"
 
@@ -334,23 +373,30 @@ class Aircraft:
                     self.vs       = -3000
                     self.alt_mode = "DES"
 
-        # ── Level off ────────────────────────────────────────────────────────
+        # ── Level off (smooth deceleration, like ALT* capture) ──────────────
         if patch.get("level_off") and self.vs != 0:
+            self._leveloff_capture_vs = self.vs
+            # Ramp VS to 0 at 500 FPM/sec (same rate as other transitions)
+            self._vs_transition_target = 0.0
+            # Coast distance: triangle area during deceleration
+            decel_sec = abs(self.vs) / 500.0
+            coast_ft  = abs(self.vs) * (decel_sec / 60.0) / 2.0
             direction = 1 if self.vs > 0 else -1
-            self._leveloff_target = round((self.altitude + direction * 100) / 100) * 100
+            raw_target = self.altitude + direction * max(coast_ft, 50)
+            self._leveloff_target = round(raw_target / 100) * 100
             self.fcu_sel_vs = 0.0
             self._alt_capture_vs = None
-            # Clear the override flag so the fcu_sel_vs:0 in the same patch
-            # does not immediately zero vs before _leveloff_target is reached
-            self._vs_managed_override = False
-            # sel_alt stays unchanged — pilot keeps full control of target altitude
+            self._vs_managed_override = True   # keep altitude integrating
+            self.alt_mode = "ALT*"             # show capture annunciation
 
         # ── V/S knob ────────────────────────────────────────────────────────
         if "fcu_sel_vs" in patch:
             self.fcu_sel_vs = max(-6000.0, min(6000.0, float(patch["fcu_sel_vs"])))
-            # New V/S is only armed — it applies when V/S PULL is pressed.
-            # Exception: if currently level, resume toward sel_alt if pointed right way.
-            if self.vs == 0 and self.fcu_sel_vs != 0:
+            # In V/S mode, knob changes apply gradually (realistic transition)
+            if self.alt_mode == "V/S" and self._vs_managed_override:
+                self._vs_transition_target = self.fcu_sel_vs
+            # If currently level, resume toward sel_alt if pointed right way.
+            elif self.vs == 0 and self.fcu_sel_vs != 0:
                 # Leveled off — resume if the dialled VS points toward sel_alt
                 alt_error = self.sel_alt - self.altitude
                 going_right_way = (self.fcu_sel_vs > 0 and alt_error > 50) or \
@@ -368,6 +414,7 @@ class Aircraft:
                 self.vs = 0.0
                 self._vs_managed_override = False
                 self._alt_capture_vs = None
+                self._vs_transition_target = None
                 self.alt_mode = "ALTCRZ" if self.phase == "CRUISE" else "ALT"
 
         # ── APPR ────────────────────────────────────────────────────────────
@@ -377,9 +424,21 @@ class Aircraft:
                 self.alt_mode = "G/S*"
 
     # ──────────────────────────────────────────────────────────────────────
+    def _dynamic_crossover(self) -> float:
+        return _crossover_ft(self.fcu_sel_mach, self.fcu_sel_spd)
+
+    # ──────────────────────────────────────────────────────────────────────
     def _update_spd_mode(self):
-        if self.fcu_spd_managed:
-            self.spd_mode = "MACH"
+        # OP DES / OP CLB → thrust column shows thrust setting
+        if self.alt_mode == "OP DES":
+            self.spd_mode = "THR IDLE"
+        elif self.alt_mode == "OP CLB":
+            self.spd_mode = "THR CLB"
+        # V/S → A/THR manages speed, always show MACH or SPEED
+        elif self.alt_mode == "V/S":
+            self.spd_mode = "MACH" if self.fcu_mach_mode else "SPEED"
+        elif self.fcu_spd_managed:
+            self.spd_mode = "MACH" if self.fcu_mach_mode else "SPEED"
         else:
             if self.fcu_mach_mode:
                 self.spd_mode = f".{int(self.fcu_sel_mach * 1000):03d}"
@@ -394,18 +453,23 @@ class Aircraft:
         V_ms = self.tas / 1.94384                          # kt → m/s
         q    = 0.5 * atm["rho"] * V_ms ** 2               # dynamic pressure
         CL   = (A320_MASS_KG * A320_G) / max(q * A320_WING_S, 1.0)
-        CD   = A320_CD0 + CL ** 2 / (math.pi * A320_AR * A320_OSWALD)
+        # Altitude-dependent CD0 (Reynolds / compressibility correction)
+        alt_kft = self.altitude / 1000.0
+        cd0_alt = A320_CD0_ALT_K * max(0.0, alt_kft - A320_CD0_ALT_REF) ** A320_CD0_ALT_POW / A320_CD0_ALT_NORM if alt_kft > A320_CD0_ALT_REF else 0.0
+        cd0_eff = A320_CD0 + cd0_alt
+        CD   = cd0_eff + CL ** 2 / (math.pi * A320_AR * A320_OSWALD)
         return q * A320_WING_S * CD
 
     def _thrust_from_n1(self) -> float:
         """Total thrust [N] produced at current N1 and altitude."""
         atm   = isa_atmosphere(self.altitude)
-        t_max = A320_T_MAX_SL_N * A320_N_ENGINES * (atm["rho"] / _ISA_RHO0) ** 0.6
+        sigma = atm["rho"] / _ISA_RHO0
         if self.n1 <= A320_N1_IDLE:
-            frac = 0.04
-        else:
-            f    = (self.n1 - A320_N1_IDLE) / (100.0 - A320_N1_IDLE)
-            frac = 0.04 + 0.96 * f ** 2
+            # Calibrated idle thrust (decoupled lapse rate)
+            return A320_T_IDLE_SL * sigma ** A320_IDLE_EXP
+        t_max = A320_T_MAX_SL_N * A320_N_ENGINES * sigma ** 0.6
+        f    = (self.n1 - A320_N1_IDLE) / (100.0 - A320_N1_IDLE)
+        frac = 0.04 + 0.96 * f ** 2
         return t_max * frac
 
     def _n1_for_level_mach(self) -> float:
@@ -430,13 +494,11 @@ class Aircraft:
     def update(self, dt: float):
         self.sim_time += dt
 
-        # ── Phase transitions (only when FCU VS is not manually overridden) ──
+        # ── Phase transitions (driven by altitude, not timers) ──────────────
         if not self._vs_managed_override:
-            if self.phase == "CRUISE" and self.sim_time >= self.descent_trigger:
-                self.phase    = "DESCENT"
-                self.alt_mode = "DES"
-                self.vs       = -1800.0
-                self.pitch    = -3.0
+            # CRUISE → DESCENT: triggered when pilot commands descent via FCU
+            if self.phase == "CRUISE" and self.vs < -50:
+                self.phase = "DESCENT"
 
             if self.phase == "DESCENT" and self.altitude <= 10000:
                 self.phase    = "APPROACH"
@@ -464,10 +526,21 @@ class Aircraft:
             1,
         )
 
+        # ── VS transition (gradual ramp toward target, ~500 FPM/sec) ────────
+        if self._vs_transition_target is not None:
+            vs_err = self._vs_transition_target - self.vs
+            max_change = 500.0 * dt          # 500 FPM per second
+            if abs(vs_err) <= max_change:
+                self.vs = self._vs_transition_target
+                self._vs_transition_target = None
+            else:
+                self.vs = round(self.vs + math.copysign(max_change, vs_err), 1)
+
         # ── Physics VS for OP CLB / OP DES (outside capture zone) ───────────
         if (self.alt_mode in ("OP DES", "OP CLB")
                 and self._vs_managed_override
-                and self._alt_capture_vs is None):
+                and self._alt_capture_vs is None
+                and self._vs_transition_target is None):
             thrust = self._thrust_from_n1()
             self.vs = round(self._compute_vs(thrust), 1)
 
@@ -476,15 +549,24 @@ class Aircraft:
             self.altitude += self.vs * (dt / 60.0)
             self.altitude  = max(self.altitude, 500.0)
 
-        # Level off at LVL OFF target (100 ft coast, doesn't change sel_alt)
+        # Level off — smooth deceleration (VS ramped by _vs_transition_target)
         if self._leveloff_target is not None:
-            if (self.vs < 0 and self.altitude <= self._leveloff_target) or \
-               (self.vs > 0 and self.altitude >= self._leveloff_target):
-                self.altitude = self._leveloff_target
+            # Overshot target altitude?
+            overshot = (self._leveloff_capture_vs is not None and
+                        ((self._leveloff_capture_vs < 0 and self.altitude <= self._leveloff_target) or
+                         (self._leveloff_capture_vs > 0 and self.altitude >= self._leveloff_target)))
+            # VS finished ramping to 0?
+            vs_done = abs(self.vs) < 20 and self._vs_transition_target is None
+
+            if overshot or vs_done:
+                if overshot:
+                    self.altitude = self._leveloff_target
                 self.vs = 0.0
                 self.alt_mode = "ALT"
                 self._vs_managed_override = False
                 self._leveloff_target = None
+                self._leveloff_capture_vs = None
+                self._vs_transition_target = None
 
         # Altitude capture — smooth deceleration toward sel_alt
         elif self._vs_managed_override and self.vs != 0:
@@ -500,6 +582,7 @@ class Aircraft:
                 self._vs_managed_override = False
                 self.fcu_vs_managed = True
                 self._alt_capture_vs = None
+                self._vs_transition_target = None
 
             else:
                 # Enter capture zone?
@@ -508,6 +591,7 @@ class Aircraft:
                 if remaining <= capture_ft:
                     if self._alt_capture_vs is None:
                         self._alt_capture_vs = self.vs
+                        self._vs_transition_target = None   # capture takes over
                         capture_ft = max(abs(self._alt_capture_vs) * 0.05, 50.0)
                     self.alt_mode = "ALT*"
                     ratio = remaining / capture_ft
@@ -519,14 +603,27 @@ class Aircraft:
                 else:
                     self._alt_capture_vs = None
 
-        # ── Speed: ISA atmosphere → Mach → TAS → IAS ────────────────────────
-        # Mach is held at the commanded value (no thrust dynamics yet).
-        # TAS and IAS update realistically as altitude changes.
-        self.mach = self.fcu_sel_mach
+        # ── Crossover auto-switch (200 ft hysteresis) ─────────────────────────
+        self._crossover_ft = self._dynamic_crossover()
+        if self.altitude > self._crossover_ft + 200 and not self.fcu_mach_mode:
+            self.fcu_mach_mode = True
+            self._update_spd_mode()
+        elif self.altitude < self._crossover_ft - 200 and self.fcu_mach_mode:
+            self.fcu_mach_mode = False
+            self._update_spd_mode()
+
+        # ── Speed: derive TAS/IAS or TAS/Mach depending on mode ──────────
         _atm = isa_atmosphere(self.altitude)
-        self.tas  = round(self.mach * _atm["sos_kt"], 1)
-        self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
+        if self.fcu_mach_mode:
+            self.mach = self.fcu_sel_mach
+            self.tas  = round(self.mach * _atm["sos_kt"], 1)
+            self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
+        else:
+            self.ias  = self.fcu_sel_spd
+            self.tas  = round(self.ias * math.sqrt(_ISA_RHO0 / _atm["rho"]), 1)
+            self.mach = round(self.tas / _atm["sos_kt"], 3)
         self.actual_spd = self.ias
+        self._update_spd_mode()
 
         wind_comp = self.wind_speed * math.cos(to_rad(self.wind_dir - self.track))
         self.gs   = round(max(self.tas + wind_comp, 50.0), 1)
@@ -598,7 +695,7 @@ class Aircraft:
             "ias":          round(self.ias),
             "actual_spd":   round(self.actual_spd, 1),
             "gs":           round(self.gs),
-            "crossover_ft": round(A320_CROSSOVER_FT),
+            "crossover_ft": round(self._crossover_ft),
             "pitch":    round(self.pitch, 1),
             "roll":     round(self.roll, 1),
             "heading":  round(self.heading, 1),

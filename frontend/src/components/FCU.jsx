@@ -122,11 +122,20 @@ function Divider() {
 // ═══════════════════════════════════════════════════════════════════════════
 // FCU MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
-export function FCU({ fcu, patch }) {
+export function FCU({ fcu, patch, state }) {
   if (!fcu) return null
 
+  // ── V/S initialization from actual VS when in OP DES/OP CLB ───────────
+  const isOpenMode = state && (state.alt_mode === 'OP DES' || state.alt_mode === 'OP CLB')
+  const initVsFromActual = () => {
+    // Round actual VS to nearest 100 FPM
+    const rounded = Math.round((state?.vs || 0) / 100) * 100
+    patch({ fcu_sel_vs: rounded, fcu_vs_managed: false })
+  }
+
   // ── Speed section handlers ─────────────────────────────────────────────
-  const spdKnob = useKnobDrag({
+  // Both hooks always called (Rules of Hooks), active one selected by mode
+  const machKnob = useKnobDrag({
     value: fcu.fcu_sel_mach,
     onChange: (v) => patch({ fcu_sel_mach: v }),
     step:  0.001,
@@ -135,6 +144,16 @@ export function FCU({ fcu, patch }) {
     pxPerStep: 3,
   })
 
+  const iasKnob = useKnobDrag({
+    value: fcu.fcu_sel_spd,
+    onChange: (v) => patch({ fcu_sel_spd: v }),
+    step:  1,
+    min:   100,
+    max:   400,
+    pxPerStep: 2,
+  })
+
+  const spdKnob = fcu.fcu_mach_mode ? machKnob : iasKnob
   const toggleSpdManaged = () => patch({ fcu_spd_managed: !fcu.fcu_spd_managed })
 
   // ── HDG section handlers ───────────────────────────────────────────────
@@ -178,7 +197,9 @@ export function FCU({ fcu, patch }) {
   const vsStr    = `${vsSign}${fcu.fcu_sel_vs}`
 
   // Knob rotation angles
-  const spdAngle = knobAngle(fcu.fcu_sel_mach, 0.10, 0.99)
+  const spdAngle = fcu.fcu_mach_mode
+    ? knobAngle(fcu.fcu_sel_mach, 0.10, 0.99)
+    : knobAngle(fcu.fcu_sel_spd, 100, 400)
   const altAngle = knobAngle(fcu.fcu_sel_alt,  100,  49900)
   const vsAngle  = knobAngle(fcu.fcu_sel_vs,  -6000, 6000)
   const hdgAngle = fcu.fcu_sel_hdg * (270 / 360) - 135
@@ -192,10 +213,23 @@ export function FCU({ fcu, patch }) {
         {/* ── SPEED SECTION ── */}
         <div className="fcu-section spd-section">
           <div className="fcu-knob-col">
-            <div className="fcu-spd-display">{fcu.fcu_sel_spd}</div>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.min(fcu.fcu_sel_spd + 5, 999) })}>▲</button>
-            <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.max(fcu.fcu_sel_spd - 5, 0) })}>▼</button>
-            <div className="fcu-knob-label">SPEED</div>
+            <div className="fcu-spd-display">
+              {fcu.fcu_mach_mode
+                ? `.${String(Math.round(fcu.fcu_sel_mach * 1000)).padStart(3, '0')}`
+                : fcu.fcu_sel_spd}
+            </div>
+            {fcu.fcu_mach_mode ? (
+              <>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_mach: Math.min(fcu.fcu_sel_mach + 0.01, 0.99) })}>▲</button>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_mach: Math.max(fcu.fcu_sel_mach - 0.01, 0.10) })}>▼</button>
+              </>
+            ) : (
+              <>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.min(fcu.fcu_sel_spd + 5, 400) })}>▲</button>
+                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.max(fcu.fcu_sel_spd - 5, 100) })}>▼</button>
+              </>
+            )}
+            <div className="fcu-knob-label">{fcu.fcu_mach_mode ? 'MACH' : 'SPEED'}</div>
           </div>
         </div>
 
@@ -262,8 +296,20 @@ export function FCU({ fcu, patch }) {
             </div>
             <div className="fcu-vs-btn-row">
               <div className="fcu-alt-push-col">
-                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.min(fcu.fcu_sel_vs + 100, 6000) })}>▲</button>
-                <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_vs: Math.max(fcu.fcu_sel_vs - 100, -6000) })}>▼</button>
+                <button className="fcu-mode-btn" onClick={() => {
+                  if (isOpenMode && fcu.fcu_vs_managed) {
+                    initVsFromActual()
+                  } else {
+                    patch({ fcu_sel_vs: Math.min(fcu.fcu_sel_vs + 100, 6000) })
+                  }
+                }}>▲</button>
+                <button className="fcu-mode-btn" onClick={() => {
+                  if (isOpenMode && fcu.fcu_vs_managed) {
+                    initVsFromActual()
+                  } else {
+                    patch({ fcu_sel_vs: Math.max(fcu.fcu_sel_vs - 100, -6000) })
+                  }
+                }}>▼</button>
               </div>
               <button
                 className="fcu-pull-btn"
