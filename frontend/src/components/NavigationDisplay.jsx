@@ -348,7 +348,7 @@ function drawTextOverlays(ctx, s) {
   // Wind vector text (below GS/TAS)
   ctx.fillStyle = '#00FF00'
   ctx.font = '12px monospace'
-  ctx.fillText(`${String(wind_dir ?? '--').padStart(3, '0')}/${wind_speed ?? '--'}`, 8, 32)
+  ctx.fillText(`${String(wind_dir ?? 0).padStart(3, '0')}/${wind_speed ?? 0}`, 8, 32)
 
   // ── Top-right: active waypoint ──
   ctx.textAlign = 'right'

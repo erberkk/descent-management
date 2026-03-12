@@ -110,6 +110,10 @@ A320_N1_MIN     = 18.0      # % N1 absolute minimum
 A320_T_IDLE_SL  = 12_000    # N total idle thrust at sea level (both engines)
 A320_IDLE_EXP   = 1.3       # density exponent for idle thrust lapse
 
+# Speed limits
+A320_VMO          = 350          # kt IAS — max operating speed
+A320_MMO          = 0.82         # Mach   — max operating Mach
+
 # Crossover altitude for M0.78 / 300 kt IAS in standard ISA  →  ≈ FL270
 A320_CROSSOVER_FT = _crossover_ft(0.78, 300)
 
@@ -133,12 +137,12 @@ class Aircraft:
         self.track   = 87.0
         self.vs      = 0.0
 
-        # ── Wind ────────────────────────────────────────────────────────────
-        self.wind_dir   = 234.0
-        self.wind_speed = 22.0
+        # ── Wind (calm for now — will add wind model later) ─────────────────
+        self.wind_dir   = 0.0
+        self.wind_speed = 0.0
 
         # ── Speeds (ISA-derived at initial altitude) ─────────────────────────
-        self.mach = 0.77
+        self.mach = 0.78
         _atm      = isa_atmosphere(self.altitude)
         self.tas  = round(self.mach * _atm["sos_kt"], 1)
         self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
@@ -181,15 +185,20 @@ class Aircraft:
         self._alt_capture_vs      = None    # VS at moment of entering capture zone
         self._vs_transition_target = None   # Gradual VS transition target (FPM)
 
+        # ── Speed trend (IAS acceleration for PFD speed trend arrow) ────────
+        self._prev_ias = None               # previous tick IAS for derivative
+        self._ias_accel = 0.0               # smoothed IAS acceleration [kt/s]
+
         # ── FCU state (mirrors the physical FCU panel) ───────────────────────
-        # Speed section
+        # Speed section — standard A320 descent: M0.78 / 300 kt IAS
         self.fcu_spd_managed  = True
         self.fcu_mach_mode    = True
-        self.fcu_sel_mach     = 0.77
-        self.fcu_sel_spd      = 260
+        self._user_mach_override = False   # True when user manually toggled SPD/MACH
+        self.fcu_sel_mach     = 0.78
+        self.fcu_sel_spd      = 300
 
         # Dynamic crossover altitude (recomputed each tick)
-        self._crossover_ft    = _crossover_ft(0.77, 260)
+        self._crossover_ft    = _crossover_ft(0.78, 300)
 
         # Lateral section
         self.fcu_hdg_managed  = True
@@ -235,7 +244,22 @@ class Aircraft:
             self._update_spd_mode()
 
         if "fcu_mach_mode" in patch:
-            self.fcu_mach_mode = bool(patch["fcu_mach_mode"])
+            new_mode = bool(patch["fcu_mach_mode"])
+            if new_mode != self.fcu_mach_mode:
+                _atm = isa_atmosphere(self.altitude)
+                if new_mode:
+                    # SPD → MACH: convert current IAS target to Mach
+                    _tas = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / _atm["rho"])
+                    self.fcu_sel_mach = round(max(0.10, min(0.99,
+                        _tas / _atm["sos_kt"])), 3)
+                else:
+                    # MACH → SPD: convert current Mach target to IAS
+                    _tas = self.fcu_sel_mach * _atm["sos_kt"]
+                    self.fcu_sel_spd = int(max(100, min(400,
+                        round(_tas * math.sqrt(_atm["rho"] / _ISA_RHO0)))))
+                self._crossover_ft = self._dynamic_crossover()
+            self.fcu_mach_mode = new_mode
+            self._user_mach_override = True   # user manually chose — keep it
 
         if "fcu_sel_mach" in patch:
             self.fcu_sel_mach = round(max(0.10, min(0.99, float(patch["fcu_sel_mach"]))), 3)
@@ -536,13 +560,54 @@ class Aircraft:
             else:
                 self.vs = round(self.vs + math.copysign(max_change, vs_err), 1)
 
-        # ── Physics VS for OP CLB / OP DES (outside capture zone) ───────────
+        # ── Physics VS + speed for OP DES / OP CLB (energy balance) ────────
+        # In OP DES/CLB, speed has priority — pitch controls speed,
+        # VS is whatever the energy balance gives.
+        #   sin(γ) = (T − D) / (m·g) − a_cmd / g
+        #   a_cmd  = Kp · (V_target − V_current)
+        _spd_from_physics = False
         if (self.alt_mode in ("OP DES", "OP CLB")
                 and self._vs_managed_override
                 and self._alt_capture_vs is None
                 and self._vs_transition_target is None):
+            _spd_from_physics = True
             thrust = self._thrust_from_n1()
-            self.vs = round(self._compute_vs(thrust), 1)
+            D      = self._compute_drag()
+            _patm  = isa_atmosphere(self.altitude)
+
+            # Target TAS from FCU selection
+            if self.fcu_mach_mode:
+                tgt_tas_kt = self.fcu_sel_mach * _patm["sos_kt"]
+            else:
+                tgt_tas_kt = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / _patm["rho"])
+
+            # Speed error → proportional acceleration command
+            V_ms   = self.tas / 1.94384          # current TAS [m/s]
+            tgt_ms = tgt_tas_kt / 1.94384        # target TAS [m/s]
+            v_err  = tgt_ms - V_ms
+
+            Kp    = 0.04                          # gain [1/s]
+            a_cmd = max(-0.30, min(0.30, Kp * v_err))  # ±0.30 m/s² operational
+
+            # Safety: OP DES never climbs, OP CLB never descends
+            a_limit = (thrust - D) / A320_MASS_KG
+            if self.alt_mode == "OP DES":
+                a_cmd = max(a_limit, a_cmd)     # floor: no climb
+            elif self.alt_mode == "OP CLB":
+                a_cmd = min(a_limit, a_cmd)     # ceiling: no descent
+
+            # Energy balance → flight path angle (includes acceleration cost)
+            W         = A320_MASS_KG * A320_G
+            sin_gamma = (thrust - D) / W - a_cmd / A320_G
+            sin_gamma = max(-0.35, min(0.35, sin_gamma))
+            self.vs   = round(self.tas * 101.269 * sin_gamma, 1)
+
+            # Integrate speed
+            new_V_ms = max(50.0 / 1.94384, V_ms + a_cmd * dt)
+            self.tas  = round(new_V_ms * 1.94384, 1)
+            self.ias  = round(self.tas * math.sqrt(_patm["rho"] / _ISA_RHO0), 1)
+            self.mach = self.tas / _patm["sos_kt"]
+            self.actual_spd = self.ias
 
         # ── Altitude ─────────────────────────────────────────────────────────
         if self.phase != "CRUISE" or self._vs_managed_override:
@@ -573,8 +638,11 @@ class Aircraft:
             remaining = abs(self.sel_alt - self.altitude)
 
             # Overshot or arrived — hard stop
+            # Proximity check: prevents false trigger when VS temporarily
+            # reverses during OP DES/CLB speed transitions (energy trade).
             if (self.vs < 0 and self.altitude <= self.sel_alt) or \
-               (self.vs > 0 and self.altitude >= self.sel_alt):
+               (self.vs > 0 and self.altitude >= self.sel_alt
+                and abs(self.altitude - self.sel_alt) < 200):
                 self.altitude = self.sel_alt
                 self.vs = 0.0
                 self.fcu_sel_vs = 0.0
@@ -604,26 +672,66 @@ class Aircraft:
                     self._alt_capture_vs = None
 
         # ── Crossover auto-switch (200 ft hysteresis) ─────────────────────────
+        # Only auto-switch if user hasn't manually overridden via SPD/MACH button.
         self._crossover_ft = self._dynamic_crossover()
-        if self.altitude > self._crossover_ft + 200 and not self.fcu_mach_mode:
-            self.fcu_mach_mode = True
-            self._update_spd_mode()
-        elif self.altitude < self._crossover_ft - 200 and self.fcu_mach_mode:
-            self.fcu_mach_mode = False
-            self._update_spd_mode()
+        if not self._user_mach_override:
+            if self.altitude > self._crossover_ft + 200 and not self.fcu_mach_mode:
+                # IAS → MACH: convert current IAS target to equivalent Mach
+                _xatm = isa_atmosphere(self.altitude)
+                _xtas = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / _xatm["rho"])
+                self.fcu_sel_mach = round(max(0.10, min(0.99,
+                    _xtas / _xatm["sos_kt"])), 3)
+                self.fcu_mach_mode = True
+                self._crossover_ft = self._dynamic_crossover()
+                self._update_spd_mode()
+            elif self.altitude < self._crossover_ft - 200 and self.fcu_mach_mode:
+                # MACH → IAS: convert current Mach target to equivalent IAS
+                _xatm = isa_atmosphere(self.altitude)
+                _xtas = self.fcu_sel_mach * _xatm["sos_kt"]
+                self.fcu_sel_spd = int(max(100, min(400,
+                    round(_xtas * math.sqrt(_xatm["rho"] / _ISA_RHO0)))))
+                self.fcu_mach_mode = False
+                self._crossover_ft = self._dynamic_crossover()
+                self._update_spd_mode()
 
-        # ── Speed: derive TAS/IAS or TAS/Mach depending on mode ──────────
-        _atm = isa_atmosphere(self.altitude)
-        if self.fcu_mach_mode:
-            self.mach = self.fcu_sel_mach
-            self.tas  = round(self.mach * _atm["sos_kt"], 1)
-            self.ias  = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
-        else:
-            self.ias  = self.fcu_sel_spd
-            self.tas  = round(self.ias * math.sqrt(_ISA_RHO0 / _atm["rho"]), 1)
-            self.mach = round(self.tas / _atm["sos_kt"], 3)
-        self.actual_spd = self.ias
+        # ── Speed: gradually approach FCU target ──────────────────────────
+        # In OP DES/CLB, speed was already computed by physics above.
+        # For other modes, use fixed-rate acceleration model.
+        if not _spd_from_physics:
+            _atm = isa_atmosphere(self.altitude)
+            _SPD_ACCEL_KT = 2.0     # IAS acceleration rate  [kt / s]
+            _MACH_ACCEL   = 0.004   # Mach acceleration rate [1 / s]
+
+            if self.fcu_mach_mode:
+                tgt  = self.fcu_sel_mach
+                err  = tgt - self.mach
+                maxd = _MACH_ACCEL * dt
+                if abs(err) <= maxd:
+                    self.mach = tgt
+                else:
+                    self.mach = self.mach + math.copysign(maxd, err)
+                self.tas = round(self.mach * _atm["sos_kt"], 1)
+                self.ias = round(self.tas * math.sqrt(_atm["rho"] / _ISA_RHO0), 1)
+            else:
+                tgt  = float(self.fcu_sel_spd)
+                err  = tgt - self.ias
+                maxd = _SPD_ACCEL_KT * dt
+                if abs(err) <= maxd:
+                    self.ias = tgt
+                else:
+                    self.ias = self.ias + math.copysign(maxd, err)
+                self.tas = round(self.ias * math.sqrt(_ISA_RHO0 / _atm["rho"]), 1)
+                self.mach = round(self.tas / _atm["sos_kt"], 3)
+            self.actual_spd = self.ias
         self._update_spd_mode()
+
+        # ── Speed trend (smoothed IAS acceleration → kt shown in 10 sec) ──
+        if self._prev_ias is not None and dt > 0:
+            raw_accel = (self.ias - self._prev_ias) / dt   # kt/s
+            # Exponential smoothing (tau ≈ 1s)
+            alpha = min(1.0, dt / 1.0)
+            self._ias_accel = self._ias_accel * (1 - alpha) + raw_accel * alpha
+        self._prev_ias = self.ias
 
         wind_comp = self.wind_speed * math.cos(to_rad(self.wind_dir - self.track))
         self.gs   = round(max(self.tas + wind_comp, 50.0), 1)
@@ -684,15 +792,22 @@ class Aircraft:
                 "is_airport": True, "is_active": False, "is_passed": False,
             })
 
+        # Effective VMO: lower of VMO and MMO-equivalent IAS at current altitude
+        _vmo_atm = isa_atmosphere(self.altitude)
+        _mmo_ias = A320_MMO * _vmo_atm["sos_kt"] * math.sqrt(_vmo_atm["rho"] / _ISA_RHO0)
+        _vmo_eff = min(A320_VMO, _mmo_ias)
+
         return {
             # ── Aircraft state ──────────────────────────────────────────────
             "lat": round(self.lat, 5),
             "lon": round(self.lon, 5),
             "altitude": round(self.altitude),
             "sel_alt":  int(self.sel_alt),
+            "vmo":          round(_vmo_eff),
             "mach":         round(self.mach, 3),
             "tas":          round(self.tas),
             "ias":          round(self.ias),
+            "spd_trend":    round(self._ias_accel * 10, 1),  # kt change in 10 sec
             "actual_spd":   round(self.actual_spd, 1),
             "gs":           round(self.gs),
             "crossover_ft": round(self._crossover_ft),

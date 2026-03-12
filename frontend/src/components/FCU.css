@@ -499,3 +499,21 @@
   line-height: 1.4;
   letter-spacing: 0.3px;
 }
+
+/* ── SPD/MACH toggle pushbutton ──────────────────────────────────────────*/
+.fcu-spd-mach-btn {
+  background: linear-gradient(180deg, #2a3440 0%, #1e2830 100%);
+  border: 1px solid #3a4850;
+  border-radius: 3px;
+  color: #e8c84a;
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  padding: 3px 10px;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.5), inset 0 1px rgba(255,255,255,0.05);
+  transition: background 0.1s;
+}
+.fcu-spd-mach-btn:hover  { background: linear-gradient(180deg, #343e4c 0%, #283240 100%); }
+.fcu-spd-mach-btn:active { background: linear-gradient(180deg, #1e2830 0%, #2a3440 100%); }

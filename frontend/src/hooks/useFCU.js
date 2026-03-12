@@ -3,8 +3,8 @@ import { useState, useCallback, useRef } from 'react'
 const DEFAULTS = {
   fcu_spd_managed:  true,
   fcu_mach_mode:    true,
-  fcu_sel_mach:     0.77,
-  fcu_sel_spd:      260,
+  fcu_sel_mach:     0.78,
+  fcu_sel_spd:      300,
   fcu_hdg_managed:  true,
   fcu_hdg_trk_mode: 'HDG',
   fcu_vs_fpa_mode:  'V/S',

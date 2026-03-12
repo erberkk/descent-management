@@ -229,6 +229,13 @@ export function FCU({ fcu, patch, state }) {
                 <button className="fcu-mode-btn" onClick={() => patch({ fcu_sel_spd: Math.max(fcu.fcu_sel_spd - 5, 100) })}>▼</button>
               </>
             )}
+            <button
+              className="fcu-spd-mach-btn"
+              onClick={() => patch({ fcu_mach_mode: !fcu.fcu_mach_mode })}
+              title="Toggle SPD/MACH"
+            >
+              {fcu.fcu_mach_mode ? 'SPD' : 'MACH'}
+            </button>
             <div className="fcu-knob-label">{fcu.fcu_mach_mode ? 'MACH' : 'SPEED'}</div>
           </div>
         </div>

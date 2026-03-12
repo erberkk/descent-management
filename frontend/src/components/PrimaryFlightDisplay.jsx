@@ -19,8 +19,11 @@ const ALT_X  = 430
 const ALT_Y  = AI_Y
 const ALT_W  = 62
 const ALT_H  = AI_H
-const ALT_RANGE = 2000     // ft visible above and below centre
-const ALT_PX = (290 / 2) / ALT_RANGE  // px per ft  (= 0.0725)
+const ALT_RANGE = 570      // ft visible above and below centre (extra margin for edge labels)
+const ALT_PX = (290 / 2) / ALT_RANGE  // px per ft  (≈ 0.254)
+
+// Attitude indicator ref-line scale (independent of altitude tape)
+const AI_PX = (290 / 2) / 2000        // px per ft for AI elements (= 0.0725)
 
 // Speed (Mach) tape geometry – horizontal at bottom
 const SPD_X  = AI_X
@@ -42,7 +45,7 @@ const DEFAULT = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-const SQ_OFFSET = 250 * ALT_PX   // px distance to first ±250 ft line
+const SQ_OFFSET = 250 * AI_PX    // px distance to first ±250 ft line
 
 function targetSquareY(vs) {
   return vs > 0 ? REF_CY - SQ_OFFSET
@@ -122,11 +125,11 @@ function render(ctx, s, selAlt, selVs, squareY) {
   drawFMA(ctx, s)
   drawEngineGauges(ctx, s.n1 ?? 70)
   drawAPStatus(ctx, s)
-  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788)
-  drawAttitudeIndicator(ctx)
-  drawCentreHorizonLine(ctx, squareY ?? REF_CY)
-  drawStaticRefLines(ctx)
-  drawHorizonArc(ctx)
+  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788, s.vmo ?? 350, s.spd_trend ?? 0)
+  drawAttitudeIndicator(ctx, s.pitch ?? 2.5)
+  drawBankArc(ctx)
+  drawAircraftSymbol(ctx)
+  drawFlightDirector(ctx, squareY ?? REF_CY)
   drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, s.vs ?? 0)
   drawHeadingTape(ctx, s.heading ?? 87)
   drawBaroIndicator(ctx, s.baro_std, s.baro_value)
@@ -313,103 +316,228 @@ function drawAPStatus(ctx, s) {
   ctx.fillText('A/THR', x, 116)
 }
 
-// ── Attitude Indicator ──────────────────────────────────────────────────────
-function drawAttitudeIndicator(ctx) {
-  const x1 = LB_X + LB_W   // right edge of speed box
-  const x2 = ALT_X          // left edge of altitude box
+// Gap between AI and speed/altitude boxes
+const AI_GAP = 18
+
+// Attitude indicator edges and centre
+const AI_X1  = LB_X + LB_W + AI_GAP       // left edge of AI area
+const AI_X2  = ALT_X - AI_GAP             // right edge of AI area
+const AI_CX  = (AI_X1 + AI_X2) / 2        // horizontal centre
+const AI_CY  = AI_Y + AI_H / 2            // vertical centre
+const PPD    = 6                           // pixels per degree of pitch
+
+// Keep REF_CY for squareY animation target
+const REF_CY = AI_CY
+
+// ── Attitude Indicator — sky, ground, horizon, pitch ladder ─────────────────
+function drawAttitudeIndicator(ctx, pitch) {
+  const x1 = AI_X1
+  const x2 = AI_X2
   const w  = x2 - x1
-  const yMid = AI_Y + AI_H / 2
+  const horizonY = AI_CY + pitch * PPD   // pitch up → horizon moves down
 
-  // Sky – blue upper half
-  ctx.fillStyle = '#3A78C2'
-  ctx.fillRect(x1, AI_Y, w, yMid - AI_Y)
+  // Clip to AI area (+ heading gap below)
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x1, AI_Y, w, SPD_Y - AI_Y)
+  ctx.clip()
 
-  // Earth – light brown lower half down to heading tape
-  ctx.fillStyle = '#C4A060'
-  ctx.fillRect(x1, yMid, w, SPD_Y - yMid)
-}
+  // Sky — blue
+  ctx.fillStyle = '#0A6EBD'
+  ctx.fillRect(x1, AI_Y, w, Math.max(0, horizonY - AI_Y))
 
-// ── Centre horizon line + vertical cross ────────────────────────────────────
-function drawCentreHorizonLine(ctx, squareY) {
-  const y  = AI_Y + AI_H / 2         // vertical centre of the AI area
-  const x1 = LB_X + LB_W            // right edge of speed box
-  const x2 = ALT_X                   // left edge of altitude box
-  const xm = (x1 + x2) / 2          // midpoint of horizontal line
+  // Ground — dark brown (extends to heading tape)
+  ctx.fillStyle = '#6B3410'
+  ctx.fillRect(x1, horizonY, w, Math.max(0, SPD_Y - horizonY))
 
+  // Horizon line
   ctx.strokeStyle = '#FFFFFF'
   ctx.lineWidth = 2
-
-  // Horizontal line
   ctx.beginPath()
-  ctx.moveTo(x1, y)
-  ctx.lineTo(x2, y)
+  ctx.moveTo(x1, horizonY)
+  ctx.lineTo(x2, horizonY)
   ctx.stroke()
 
-  // Vertical line: from top of boxes down to the heading tape
+  // ── Pitch ladder (every 2.5°) ──
+  const longHalf  = 55     // half-width of 10° lines
+  const medHalf   = 30     // half-width of 5° lines
+  const shortHalf = 15     // half-width of 2.5° lines
+
+  for (let degX10 = -300; degX10 <= 300; degX10 += 25) {
+    if (degX10 === 0) continue
+    const deg = degX10 / 10
+    const y = horizonY - deg * PPD
+    if (y < BANK_BOTTOM || y > AI_Y + AI_H - 10) continue
+
+    const isMajor = degX10 % 100 === 0   // 10°, 20°, 30°
+    const is5     = degX10 % 50 === 0     // 5°, 15°, 25°
+    const half = isMajor ? longHalf : is5 ? medHalf : shortHalf
+
+    ctx.strokeStyle = '#FFFFFF'
+    ctx.lineWidth = isMajor ? 2 : is5 ? 1.5 : 1
+
+    // All lines straight
+    ctx.beginPath()
+    ctx.moveTo(AI_CX - half, y)
+    ctx.lineTo(AI_CX + half, y)
+    ctx.stroke()
+
+    // Degree labels for 10° lines
+    if (isMajor) {
+      ctx.font = 'bold 12px monospace'
+      ctx.fillStyle = '#FFFFFF'
+      ctx.textAlign = 'right'
+      ctx.fillText(String(Math.abs(deg)), AI_CX - half - 5, y + 4)
+      ctx.textAlign = 'left'
+      ctx.fillText(String(Math.abs(deg)), AI_CX + half + 5, y + 4)
+    }
+  }
+
+  ctx.restore()
+}
+
+// ── Bank angle arc (top of AI) ──────────────────────────────────────────────
+//  A320 layout: white arc with ticks at 10, 20, 30, 45°
+//  Yellow triangle (roll index) below arc pointing UP
+//  White inverted triangle at 0° on the arc (fixed reference)
+// Bank arc geometry — smaller arc so pitch 20° line sits below 45° ticks
+const BANK_R      = 75
+const BANK_ARC_TOP = AI_Y + 8
+const BANK_CY     = BANK_ARC_TOP + BANK_R     // arc centre
+// Bottom of 45° ticks (pitch ladder must stay below this)
+const BANK_BOTTOM = Math.ceil(BANK_CY - BANK_R * Math.cos(Math.PI / 4)) + 5
+
+function drawBankArc(ctx) {
+  const R  = BANK_R
+  const cy = BANK_CY
+
+  // Arc spans ±45° from 12 o'clock
+  ctx.strokeStyle = '#FFFFFF'
+  ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.moveTo(xm, AI_Y)
-  ctx.lineTo(xm, SPD_Y)
+  ctx.arc(AI_CX, cy, R, -Math.PI / 2 - Math.PI / 4, -Math.PI / 2 + Math.PI / 4)
   ctx.stroke()
 
-  // Green square (animated y position)
-  const sq = 10
+  // Tick marks — extend OUTWARD from arc
+  const ticks = [
+    { deg: 10, len: 7,  w: 1.5 },
+    { deg: 20, len: 7,  w: 1.5 },
+    { deg: 30, len: 12, w: 2 },
+    { deg: 45, len: 9,  w: 1.5 },
+  ]
+  for (const { deg, len, w } of ticks) {
+    for (const sign of [-1, 1]) {
+      const a  = -Math.PI / 2 + sign * deg * Math.PI / 180
+      const ax = Math.cos(a)
+      const ay = Math.sin(a)
+      ctx.strokeStyle = '#FFFFFF'
+      ctx.lineWidth = w
+      ctx.beginPath()
+      ctx.moveTo(AI_CX + R * ax,         cy + R * ay)
+      ctx.lineTo(AI_CX + (R + len) * ax, cy + (R + len) * ay)
+      ctx.stroke()
+    }
+  }
+
+  // ── Triangles at 0° — photo reference: ▽ white on top, △ yellow below ──
+  const arcTopPt = cy - R               // y where arc meets 0° (top of arc)
+
+  // White triangle ▽ — ABOVE arc, pointing DOWN toward arc
+  const whiteH = 10
+  const whiteW = 7
+  const whiteTop = arcTopPt - whiteH - 2  // sits above arc with 2px gap
+  ctx.fillStyle = '#FFFFFF'
+  ctx.beginPath()
+  ctx.moveTo(AI_CX, whiteTop + whiteH)    // bottom point (near arc)
+  ctx.lineTo(AI_CX - whiteW, whiteTop)    // top-left
+  ctx.lineTo(AI_CX + whiteW, whiteTop)    // top-right
+  ctx.closePath()
+  ctx.fill()
+
+  // Yellow triangle △ — BELOW arc, pointing UP toward arc
+  const yellowH = 10
+  const yellowW = 7
+  const yellowTop = arcTopPt + 2           // sits below arc with 2px gap
+  ctx.fillStyle = '#FFD700'
+  ctx.beginPath()
+  ctx.moveTo(AI_CX, yellowTop)            // top point (near arc)
+  ctx.lineTo(AI_CX - yellowW, yellowTop + yellowH)  // bottom-left
+  ctx.lineTo(AI_CX + yellowW, yellowTop + yellowH)  // bottom-right
+  ctx.closePath()
+  ctx.fill()
+}
+
+// ── Fixed aircraft symbol (centre square + L-shaped wings) ──────────────────
+//  A320 style: black filled, yellow outline
+//  Wings are L-shaped: horizontal bar + downward vertical piece at outer end
+function drawAircraftSymbol(ctx) {
+  const cx = AI_CX
+  const cy = AI_CY
+
+  // Centre square (yellow filled, black outline)
+  const sq = 5
+  ctx.fillStyle = '#FFD700'
+  ctx.strokeStyle = '#000'
+  ctx.lineWidth = 1
+  ctx.fillRect(cx - sq, cy - sq, sq * 2, sq * 2)
+  ctx.strokeRect(cx - sq, cy - sq, sq * 2, sq * 2)
+
+  // L-shaped wings — positioned at FD bar ends
+  // Horizontal part: extends outward from centre gap
+  // Vertical part: drops down at the outer tip
+  const wingGap  = 58       // distance from centre to wing inner edge
+  const wingW    = 28       // horizontal part width
+  const wingH    = 6        // horizontal part thickness
+  const dropW    = 6        // vertical drop thickness
+  const dropH    = 18       // vertical drop height
+
+  ctx.fillStyle = '#000'
+  ctx.strokeStyle = '#FFD700'
+  ctx.lineWidth = 1.5
+
+  // Left wing: downward drop at INNER end (near centre), horizontal extends outward
+  ctx.beginPath()
+  ctx.moveTo(cx - wingGap - wingW, cy - wingH / 2)                 // outer top
+  ctx.lineTo(cx - wingGap, cy - wingH / 2)                         // inner top
+  ctx.lineTo(cx - wingGap, cy - wingH / 2 + dropH)                // drop down
+  ctx.lineTo(cx - wingGap - dropW, cy - wingH / 2 + dropH)        // drop outer
+  ctx.lineTo(cx - wingGap - dropW, cy + wingH / 2)                // step up
+  ctx.lineTo(cx - wingGap - wingW, cy + wingH / 2)                // outer bottom
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+
+  // Right wing: mirror
+  ctx.beginPath()
+  ctx.moveTo(cx + wingGap + wingW, cy - wingH / 2)
+  ctx.lineTo(cx + wingGap, cy - wingH / 2)
+  ctx.lineTo(cx + wingGap, cy - wingH / 2 + dropH)
+  ctx.lineTo(cx + wingGap + dropW, cy - wingH / 2 + dropH)
+  ctx.lineTo(cx + wingGap + dropW, cy + wingH / 2)
+  ctx.lineTo(cx + wingGap + wingW, cy + wingH / 2)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+}
+
+// ── Flight Director (green cross + wing shapes) ─────────────────────────────
+function drawFlightDirector(ctx, fdY) {
+  const cx = AI_CX
+  const barH = 3.5        // bar thickness
+
+  // ── Horizontal FD bar with wing shapes ──
+  // Inner wing (thick, near centre)
+  const innerHalf = 50
+  const outerGap  = 8     // gap from centre to inner wing start
   ctx.fillStyle = '#00FF00'
-  ctx.fillRect(xm - sq / 2, squareY - sq / 2, sq, sq)
-}
+  // Left inner wing
+  ctx.fillRect(cx - outerGap - innerHalf, fdY - barH / 2, innerHalf, barH)
+  // Right inner wing
+  ctx.fillRect(cx + outerGap, fdY - barH / 2, innerHalf, barH)
 
-// ── Static reference line grid ───────────────────────────────────────────────
-// Pixel positions fixed at initial conditions: alt=27000, hdg=87.
-// REF_CY is the centre y; ALT_PX converts ft offset to px.
-// REF_CX is the centre x; REF_PPD converts heading degrees to px.
-const REF_CY  = AI_Y + AI_H / 2          // 288
-const REF_CX  = AI_X + AI_W / 2          // 248
-const REF_PPD = (SPD_W / 2) / 30         // px per degree ≈ 5.667
-
-function refY(alt)  { return REF_CY - (alt - 26000) * ALT_PX }
-function refX(hdg)  { return REF_CX + (hdg - 87)    * REF_PPD }
-
-function drawStaticRefLines(ctx) {
-  ctx.strokeStyle = '#FFFFFF'
-  ctx.lineWidth = 2
-
-  // Long lines (hdg 080–094) at 27000, 26500, 25500, 25000
-  for (const alt of [27000, 26500, 25500, 25000]) {
-    ctx.beginPath()
-    ctx.moveTo(refX(80), refY(alt))
-    ctx.lineTo(refX(94), refY(alt))
-    ctx.stroke()
-  }
-
-  // Short lines (hdg 084–090) at 26750, 26250, 25750, 25250
-  for (const alt of [26750, 26250, 25750, 25250]) {
-    ctx.beginPath()
-    ctx.moveTo(refX(84), refY(alt))
-    ctx.lineTo(refX(90), refY(alt))
-    ctx.stroke()
-  }
-}
-
-// ── Horizon arc ─────────────────────────────────────────────────────────────
-// Static: endpoints at hdg 062 & 112 on the baseline, peak at alt 27250.
-// All pixel positions fixed at initial conditions (alt=27000, hdg=87).
-function drawHorizonArc(ctx) {
-  const arcCX = REF_CX                      // symmetric about hdg 87
-  const halfW = 25 * REF_PPD               // half of 50° span (hdg 062–112)
-  const yBase = REF_CY                      // baseline y (main horizontal line)
-  const yPeak = refY(27250)                 // fixed peak y
-
-  const h    = yBase - yPeak               // arc height (px)
-  const dy   = (halfW * halfW - h * h) / (2 * h)
-  const yCtr = yBase + dy
-  const R    = Math.sqrt(halfW * halfW + dy * dy)
-  const aStart = Math.atan2(yBase - yCtr, -halfW)
-  const aEnd   = Math.atan2(yBase - yCtr,  halfW)
-
-  ctx.strokeStyle = '#FFFFFF'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ctx.arc(arcCX, yCtr, R, aEnd, aStart, true)
-  ctx.stroke()
+  // ── Vertical FD bar ──
+  const vBarHalfH = 28
+  ctx.fillRect(cx - barH / 2, fdY - vBarHalfH, barH, vBarHalfH * 2)
 }
 
 // ── Altitude tape (right side) ──────────────────────────────────────────────
@@ -431,29 +559,40 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
   ctx.rect(cx, cy, ALT_W, ALT_H)
   ctx.clip()
 
-  // Snap grid to nearest 100ft and iterate ±2000ft
-  const firstAlt = Math.ceil((altitude - ALT_RANGE) / 100) * 100
-  const lastAlt  = Math.floor((altitude + ALT_RANGE) / 100) * 100
+  // Snap grid to nearest 500ft and draw labels
+  const firstAlt = Math.ceil((altitude - ALT_RANGE) / 500) * 500
+  const lastAlt  = Math.floor((altitude + ALT_RANGE) / 500) * 500
 
-  for (let a = firstAlt; a <= lastAlt; a += 100) {
+  // Minor ticks every 100 ft
+  const firstMinor = Math.ceil((altitude - ALT_RANGE) / 100) * 100
+  const lastMinor  = Math.floor((altitude + ALT_RANGE) / 100) * 100
+  for (let a = firstMinor; a <= lastMinor; a += 100) {
+    if (a % 500 === 0) continue  // skip major tick positions
     const yPos = centreY - (a - altitude) * ALT_PX
-    const is500 = a % 500 === 0
-
-    // Tick mark
     ctx.strokeStyle = '#888'
-    ctx.lineWidth = is500 ? 1.5 : 1
+    ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(cx, yPos)
-    ctx.lineTo(cx + (is500 ? 12 : 7), yPos)
+    ctx.lineTo(cx + 7, yPos)
+    ctx.stroke()
+  }
+
+  // Major ticks + labels every 500 ft
+  for (let a = firstAlt; a <= lastAlt; a += 500) {
+    const yPos = centreY - (a - altitude) * ALT_PX
+
+    ctx.strokeStyle = '#888'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.moveTo(cx, yPos)
+    ctx.lineTo(cx + 12, yPos)
     ctx.stroke()
 
-    // Label every 500 ft
-    if (is500) {
-      ctx.font = '11px monospace'
-      ctx.fillStyle = '#CCCCCC'
-      ctx.textAlign = 'left'
-      ctx.fillText(String(Math.round(a)), cx + 14, yPos + 4)
-    }
+    // Label as 3-digit (ft / 100): 34500→345, 35000→350
+    ctx.font = 'bold 17px monospace'
+    ctx.fillStyle = '#CCCCCC'
+    ctx.textAlign = 'left'
+    ctx.fillText(String(Math.round(a / 100)), cx + 14, yPos + 5)
   }
 
   // Selected altitude bug (blue chevron on left edge)
@@ -481,8 +620,8 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
   ctx.fill()
   ctx.stroke()
 
-  ctx.font = 'bold 14px monospace'
-  ctx.fillStyle = '#FFFFFF'
+  ctx.font = 'bold 17px monospace'
+  ctx.fillStyle = '#00FF00'
   ctx.textAlign = 'center'
   ctx.fillText(String(Math.round(altitude / 20) * 20).padStart(5, ' '), cx + ALT_W / 2, pY + 5)
 
@@ -491,7 +630,7 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
 }
 
 // ── Left speed tape (IAS) + Mach readout ─────────────────────────────────────
-function drawLeftBox(ctx, ias, mach) {
+function drawLeftBox(ctx, ias, mach, vmo, spdTrend) {
   const x = LB_X
   const y = AI_Y
   const w = LB_W
@@ -527,27 +666,59 @@ function drawLeftBox(ctx, ias, mach) {
     ctx.stroke()
 
     if (isMajor) {
-      ctx.font = '12px monospace'
+      ctx.font = 'bold 15px monospace'
       ctx.fillStyle = '#DDDDDD'
       ctx.textAlign = 'right'
-      ctx.fillText(String(spd), x + w - 14, yPos + 4)
+      ctx.fillText(String(spd), x + w - 14, yPos + 5)
     }
+  }
+
+  // ── Speed trend arrow (thick yellow, centre of tape) ──
+  if (Math.abs(spdTrend) > 1) {
+    const trendPx = Math.max(-h / 2 + 14, Math.min(h / 2 - 14, -spdTrend * pxPerKt))
+    const arrowX  = x + w / 2 + 6   // centre-right of tape
+    const arrowY0 = centreY
+    const arrowY1 = centreY + trendPx
+    // Dark outline for contrast
+    ctx.strokeStyle = '#000'
+    ctx.lineWidth = 6
+    ctx.beginPath()
+    ctx.moveTo(arrowX, arrowY0)
+    ctx.lineTo(arrowX, arrowY1)
+    ctx.stroke()
+    // Yellow line
+    ctx.strokeStyle = '#FFD700'
+    ctx.lineWidth = 3.5
+    ctx.beginPath()
+    ctx.moveTo(arrowX, arrowY0)
+    ctx.lineTo(arrowX, arrowY1)
+    ctx.stroke()
+    // Arrowhead
+    const dir = trendPx > 0 ? 1 : -1
+    ctx.fillStyle = '#FFD700'
+    ctx.beginPath()
+    ctx.moveTo(arrowX, arrowY1)
+    ctx.lineTo(arrowX - 5, arrowY1 - dir * 8)
+    ctx.lineTo(arrowX + 5, arrowY1 - dir * 8)
+    ctx.closePath()
+    ctx.fill()
   }
 
   ctx.restore()
 
   // ── IAS pointer box (centre) ──
   const pY = centreY
+  const overspeed = ias > vmo
   ctx.fillStyle = '#222'
-  ctx.strokeStyle = '#FFD700'
+  ctx.strokeStyle = overspeed ? '#FF0000' : '#FFD700'
   ctx.lineWidth = 2
   ctx.beginPath()
   roundRect(ctx, x - 2, pY - 14, w + 4, 28, 3)
   ctx.fill()
   ctx.stroke()
 
-  ctx.font = 'bold 15px monospace'
-  ctx.fillStyle = '#FFFFFF'
+  ctx.font = 'bold 18px monospace'
+  ctx.fillStyle = overspeed ? '#FF0000' : '#FFFFFF'
   ctx.textAlign = 'center'
   ctx.fillText(String(Math.round(ias)).padStart(3, ' '), x + w / 2, pY + 5)
 
@@ -565,6 +736,28 @@ function drawLeftBox(ctx, ias, mach) {
   ctx.fillStyle = '#00FF88'
   ctx.textAlign = 'center'
   ctx.fillText(machStr, x + w / 2, mY + 13)
+
+  // ── Overspeed barber pole (red squares in gap between speed box and AI) ──
+  const vmoY = centreY - (vmo - ias) * pxPerKt
+  if (vmoY > y) {
+    const bpX = x + w + 2                     // gap area starts after speed box
+    const bpW = AI_GAP - 4                     // leave small margins
+    const bpTop = y                            // top of tape
+    const bpBot = Math.min(vmoY, y + h)        // VMO line or bottom of tape
+    const sqSize = 6                           // red square size
+    const gap    = 6                           // gap between squares
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(bpX, bpTop, bpW, bpBot - bpTop)
+    ctx.clip()
+
+    for (let sy = bpBot - sqSize; sy >= bpTop - sqSize; sy -= (sqSize + gap)) {
+      ctx.fillStyle = '#CC0000'
+      ctx.fillRect(bpX + (bpW - sqSize) / 2, sy, sqSize, sqSize)
+    }
+    ctx.restore()
+  }
 }
 
 function drawVSI(ctx, vs, x, y) {
@@ -621,7 +814,8 @@ function drawVSI(ctx, vs, x, y) {
   if (vs !== 0) {
     const vsY       = centreY - vsClamp * scale
     const labelY    = Math.max(y + 8, Math.min(y + h - 8, vsY))
-    const fpmStr    = (vs > 0 ? '+' : '') + Math.round(vs)
+    const fpmRound  = Math.round(vs / 20) * 20
+    const fpmStr    = (vs > 0 ? '+' : '') + fpmRound
     const boxW      = 38
     const boxH      = 14
     const boxX      = x - boxW - 2
