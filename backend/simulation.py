@@ -114,6 +114,17 @@ A320_IDLE_EXP   = 1.3       # density exponent for idle thrust lapse
 A320_VMO          = 350          # kt IAS — max operating speed
 A320_MMO          = 0.82         # Mach   — max operating Mach
 
+# Low-speed protections (clean configuration, no slats/flaps)
+# Vs1g_clean = 172 kt at MTOW 78t (FCOM LIM-13), scaled to 65t:
+#   172 × sqrt(65000/78000) = 157 kt IAS
+A320_CL_MAX_CLEAN = 1.30        # max lift coefficient, clean config
+_Vs1g_ms  = math.sqrt(2 * A320_MASS_KG * A320_G / (_ISA_RHO0 * A320_WING_S * A320_CL_MAX_CLEAN))
+A320_VS1G_IAS     = round(_Vs1g_ms * 1.94384, 1)   # ≈ 157 kt IAS
+A320_VLS_FACTOR   = 1.28        # VLS = 1.28 × Vs1g (clean config)
+A320_VLS          = round(A320_VS1G_IAS * A320_VLS_FACTOR)  # ≈ 201 kt IAS
+A320_ALPHA_PROT   = round(A320_VS1G_IAS * 1.13)             # ≈ 177 kt IAS
+A320_ALPHA_MAX    = round(A320_VS1G_IAS * 1.03)             # ≈ 162 kt IAS
+
 # Crossover altitude for M0.78 / 300 kt IAS in standard ISA  →  ≈ FL270
 A320_CROSSOVER_FT = _crossover_ft(0.78, 300)
 
@@ -330,35 +341,23 @@ class Aircraft:
             self.sel_alt = self.fcu_sel_alt
             self._alt_capture_vs = None
             if self.altitude < self.sel_alt - 50:
-                if self.alt_mode == "OP CLB":
-                    # Already climbing — just update target, physics continues
-                    pass
-                elif self.alt_mode == "V/S" and self.vs != 0:
-                    # Smooth ramp from current VS toward CLB thrust VS
+                if self.alt_mode != "OP CLB":
+                    # Ramp VS from current value toward CLB-thrust equilibrium
                     saved_n1 = self.n1
                     self.n1 = A320_N1_CLB
                     t = self._thrust_from_n1()
                     self.n1 = saved_n1
                     self._vs_transition_target = round(self._compute_vs(t), 1)
-                else:
-                    self.vs = 0.0
-                    self._vs_transition_target = None
                 self.alt_mode = "OP CLB"
                 self._vs_managed_override = True
             elif self.altitude > self.sel_alt + 50:
-                if self.alt_mode == "OP DES":
-                    # Already descending — just update target, physics continues
-                    pass
-                elif self.alt_mode == "V/S" and self.vs != 0:
-                    # Smooth ramp from current VS toward idle thrust VS
+                if self.alt_mode != "OP DES":
+                    # Ramp VS from current value toward idle-thrust equilibrium
                     saved_n1 = self.n1
                     self.n1 = A320_N1_IDLE
                     t = self._thrust_from_n1()
                     self.n1 = saved_n1
                     self._vs_transition_target = round(self._compute_vs(t), 1)
-                else:
-                    self.vs = 0.0
-                    self._vs_transition_target = None
                 self.alt_mode = "OP DES"
                 self._vs_managed_override = True
             else:
@@ -497,15 +496,35 @@ class Aircraft:
         return t_max * frac
 
     def _n1_for_level_mach(self) -> float:
-        """N1 [%] required to maintain current Mach in level flight."""
-        D     = self._compute_drag()
-        atm   = isa_atmosphere(self.altitude)
+        """N1 [%] required for level flight, including A/THR acceleration thrust.
+
+        When the FCU target speed differs from current speed, the autothrust
+        commands extra thrust (accelerate) or reduced thrust (decelerate)
+        on top of the drag-balancing baseline — just like a real A320 A/THR.
+        """
+        D   = self._compute_drag()
+        atm = isa_atmosphere(self.altitude)
+
+        # ── Speed error → acceleration command ──────────────────────────────
+        if self.fcu_mach_mode:
+            tgt_tas_kt = self.fcu_sel_mach * atm["sos_kt"]
+        else:
+            tgt_tas_kt = self.fcu_sel_spd * math.sqrt(_ISA_RHO0 / atm["rho"])
+
+        v_err_ms = (tgt_tas_kt - self.tas) / 1.94384        # kt → m/s
+        Kp       = 0.08                                       # A/THR speed gain [1/s]
+        a_cmd    = max(-0.50, min(0.50, Kp * v_err_ms))       # m/s², clamped
+
+        # Total thrust = drag + acceleration force
+        T_needed = D + A320_MASS_KG * a_cmd
+
+        # ── Convert thrust → N1 ────────────────────────────────────────────
         t_max = A320_T_MAX_SL_N * A320_N_ENGINES * (atm["rho"] / _ISA_RHO0) ** 0.6
-        frac  = D / max(t_max, 1.0)
+        frac  = T_needed / max(t_max, 1.0)
         if frac <= 0.04:
             return A320_N1_IDLE
         f = math.sqrt(max(0.0, (frac - 0.04) / 0.96))
-        return min(A320_N1_CLB, A320_N1_IDLE + f * (100.0 - A320_N1_IDLE))
+        return max(A320_N1_IDLE, min(A320_N1_CLB, A320_N1_IDLE + f * (100.0 - A320_N1_IDLE)))
 
     def _compute_vs(self, thrust_n: float) -> float:
         """Vertical speed [FPM] from thrust–drag energy balance."""
@@ -804,6 +823,9 @@ class Aircraft:
             "altitude": round(self.altitude),
             "sel_alt":  int(self.sel_alt),
             "vmo":          round(_vmo_eff),
+            "vls":          A320_VLS,
+            "alpha_prot":   A320_ALPHA_PROT,
+            "alpha_max":    A320_ALPHA_MAX,
             "mach":         round(self.mach, 3),
             "tas":          round(self.tas),
             "ias":          round(self.ias),

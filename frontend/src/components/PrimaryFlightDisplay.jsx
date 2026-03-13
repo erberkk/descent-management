@@ -125,7 +125,7 @@ function render(ctx, s, selAlt, selVs, squareY) {
   drawFMA(ctx, s)
   drawEngineGauges(ctx, s.n1 ?? 70)
   drawAPStatus(ctx, s)
-  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788, s.vmo ?? 350, s.spd_trend ?? 0)
+  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788, s.vmo ?? 350, s.vls ?? 201, s.alpha_prot ?? 177, s.alpha_max ?? 162, s.spd_trend ?? 0)
   drawAttitudeIndicator(ctx, s.pitch ?? 2.5)
   drawBankArc(ctx)
   drawAircraftSymbol(ctx)
@@ -630,7 +630,7 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs) {
 }
 
 // ── Left speed tape (IAS) + Mach readout ─────────────────────────────────────
-function drawLeftBox(ctx, ias, mach, vmo, spdTrend) {
+function drawLeftBox(ctx, ias, mach, vmo, vls, alphaProt, alphaMax, spdTrend) {
   const x = LB_X
   const y = AI_Y
   const w = LB_W
@@ -737,99 +737,214 @@ function drawLeftBox(ctx, ias, mach, vmo, spdTrend) {
   ctx.textAlign = 'center'
   ctx.fillText(machStr, x + w / 2, mY + 13)
 
-  // ── Overspeed barber pole (red squares in gap between speed box and AI) ──
+  // ── Overspeed barber pole (red squares flush left, thin line on right) ──
   const vmoY = centreY - (vmo - ias) * pxPerKt
   if (vmoY > y) {
-    const bpX = x + w + 2                     // gap area starts after speed box
-    const bpW = AI_GAP - 4                     // leave small margins
-    const bpTop = y                            // top of tape
-    const bpBot = Math.min(vmoY, y + h)        // VMO line or bottom of tape
-    const sqSize = 6                           // red square size
-    const gap    = 6                           // gap between squares
+    const bpX    = x + w + 1                   // flush against speed box
+    const bpTop  = y
+    const bpBot  = Math.min(vmoY, y + h)
+    const sqSize = 6
+    const gap    = 6
 
     ctx.save()
     ctx.beginPath()
-    ctx.rect(bpX, bpTop, bpW, bpBot - bpTop)
+    ctx.rect(bpX, bpTop, AI_GAP, bpBot - bpTop)
     ctx.clip()
 
+    // Red squares — left-aligned
     for (let sy = bpBot - sqSize; sy >= bpTop - sqSize; sy -= (sqSize + gap)) {
       ctx.fillStyle = '#CC0000'
-      ctx.fillRect(bpX + (bpW - sqSize) / 2, sy, sqSize, sqSize)
+      ctx.fillRect(bpX, sy, sqSize, sqSize)
     }
+
+    // Thin vertical line on the right edge of the squares
+    ctx.strokeStyle = '#CC0000'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(bpX + sqSize + 1, bpTop)
+    ctx.lineTo(bpX + sqSize + 1, bpBot)
+    ctx.stroke()
+
     ctx.restore()
+  }
+
+  // ── VLS → Alpha Prot: solid amber strip ──────────────────────────────
+  // ── Alpha Prot → Alpha Max: amber squares (barber pole) ────────────
+  const vlsY   = centreY - (vls - ias) * pxPerKt
+  const aProtY = centreY - (alphaProt - ias) * pxPerKt
+  const aMaxY  = centreY - (alphaMax - ias) * pxPerKt
+  const bpX    = x + w + 2
+  const bpW    = AI_GAP - 4
+
+  // Thin amber line: VLS → Alpha Prot, with a left notch at VLS
+  {
+    const top = Math.max(vlsY, y)
+    const bot = Math.min(aProtY, y + h)
+    const lineX = bpX + bpW / 2                   // centre of gap
+    if (bot > top) {
+      // Vertical thin line
+      ctx.strokeStyle = '#CC8800'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(lineX, top)
+      ctx.lineTo(lineX, bot)
+      ctx.stroke()
+      // Left notch at VLS top (hook toward speed tape)
+      if (vlsY >= y && vlsY <= y + h) {
+        ctx.beginPath()
+        ctx.moveTo(lineX, vlsY)
+        ctx.lineTo(bpX - 3, vlsY)
+        ctx.stroke()
+      }
+    }
+  }
+
+  // Amber barber pole squares: Alpha Prot → Alpha Max
+  {
+    const top    = Math.max(aProtY, y)
+    const bot    = Math.min(aMaxY, y + h)
+    const sqSize = 6
+    const gap    = 6
+    if (bot > top) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(bpX, top, bpW, bot - top)
+      ctx.clip()
+      for (let sy = top; sy <= bot; sy += (sqSize + gap)) {
+        ctx.fillStyle = '#CC8800'
+        ctx.fillRect(bpX + (bpW - sqSize) / 2, sy, sqSize, sqSize)
+      }
+      ctx.restore()
+    }
   }
 }
 
 function drawVSI(ctx, vs, x, y) {
-  const h = ALT_H
-  const w = 20
-
-  ctx.fillStyle = '#0a0a0a'
-  ctx.fillRect(x, y, w, h)
-
-  // Scale: -2000 to +2000 fpm
-  const maxVS = 2000
+  const h       = ALT_H           // 290
+  const W_MID   = 36              // width at centre (widest)
+  const W_END   = 20              // width at top / bottom (narrowest)
   const centreY = y + h / 2
-  const scale = (h / 2) / maxVS
-  const vsClamp = Math.max(-maxVS, Math.min(maxVS, vs))
+  const HALF_H  = (h / 2) - 6    // usable half-height (6 px margin)
 
-  // Ticks at ±500, ±1000, ±2000
-  ctx.strokeStyle = '#666'
+  // ── Non-linear scale: fpm → Y pixel ──────────────────────────────────
+  //   0→1 : 50 % of half-height  (longest gap)
+  //   1→2 : 25 %  (same as 2→6)
+  //   2→6 : 25 %
+  function vsiToY(fpm) {
+    const a   = Math.min(Math.abs(fpm), 6000)
+    const sgn = fpm >= 0 ? -1 : 1                // climb = up on screen
+    let frac
+    if (a <= 1000)      frac = (a / 1000) * 0.50
+    else if (a <= 2000) frac = 0.50 + ((a - 1000) / 1000) * 0.25
+    else                frac = 0.75 + ((a - 2000) / 4000) * 0.25
+    return centreY + sgn * frac * HALF_H
+  }
+
+  // ── Tapered width at any Y ───────────────────────────────────────────
+  // Straight from centre to just past "2" mark, then tapers toward "6"
+  const TAPER_START = HALF_H * 0.78            // ~just past the "2" position
+  function tapW(yy) {
+    const dist = Math.abs(yy - centreY)
+    if (dist <= TAPER_START) return W_MID      // straight section
+    const t = (dist - TAPER_START) / (h / 2 - TAPER_START)
+    return W_MID + (W_END - W_MID) * Math.min(t, 1)
+  }
+
+  // ── Tapered background fill ──────────────────────────────────────────
+  const S = 40
+  ctx.fillStyle = '#181c20'
+  ctx.beginPath()
+  for (let i = 0; i <= S; i++) {                  // right edge ↓
+    const yy = y + (h * i) / S
+    const xx = x + tapW(yy)
+    if (i === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy)
+  }
+  ctx.lineTo(x, y + h)
+  ctx.lineTo(x, y)
+  ctx.closePath()
+  ctx.fill()
+  ctx.strokeStyle = '#333'
   ctx.lineWidth = 1
-  for (const v of [500, 1000, 2000]) {
-    for (const s of [-1, 1]) {
-      const ty = centreY - s * v * scale
+  ctx.stroke()
+
+  // ── Yellow zero line ─────────────────────────────────────────────────
+  ctx.strokeStyle = '#FFD700'
+  ctx.lineWidth = 2.5
+  ctx.beginPath()
+  ctx.moveTo(x + 1, centreY)
+  ctx.lineTo(x + tapW(centreY) - 1, centreY)
+  ctx.stroke()
+
+  // ── White scale on gray background ────────────────────────────────────
+  // Ticks at: 500, 1000, 1500, 2000, 4000, 6000 fpm (each side)
+  // Only ONE tick between 2 and 6 (at 4000)
+  const minorTicks = [500, 1500, 4000]
+  const majorTicks = [[1000, '1'], [2000, '2'], [6000, '6']]
+
+  // Minor ticks (no label, thin)
+  for (const fpm of minorTicks) {
+    for (const s of [1, -1]) {
+      const ty = vsiToY(s * fpm)
+      ctx.strokeStyle = '#CCC'
+      ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(x, ty)
-      ctx.lineTo(x + 8, ty)
+      ctx.moveTo(x + 14, ty)
+      ctx.lineTo(x + 21, ty)
       ctx.stroke()
-      ctx.font = '9px monospace'
-      ctx.fillStyle = '#888'
+    }
+  }
+  // Major ticks + labels: 1, 2, 6 (× 1000 fpm) — white
+  for (const [fpm, lbl] of majorTicks) {
+    for (const s of [1, -1]) {
+      const ty = vsiToY(s * fpm)
+      ctx.font = 'bold 11px monospace'
+      ctx.fillStyle = '#CCC'
       ctx.textAlign = 'left'
-      ctx.fillText(String(v / 100), x + 10, ty + 4)
+      ctx.fillText(lbl, x + 2, ty + 4)
+      ctx.strokeStyle = '#CCC'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(x + 14, ty)
+      ctx.lineTo(x + 22, ty)
+      ctx.stroke()
     }
   }
 
-  // VS pointer
-  if (vs !== 0) {
-    const vsY = centreY - vsClamp * scale
-    ctx.fillStyle = '#00FF00'
-    ctx.beginPath()
-    ctx.moveTo(x, vsY)
-    ctx.lineTo(x + 14, vsY - 4)
-    ctx.lineTo(x + 14, vsY + 4)
-    ctx.closePath()
-    ctx.fill()
-  }
+  // ── Green analog pointer (diagonal line from left-centre → right-VS) ─
+  // VS=0: horizontal, aligned with yellow zero line.
+  // VS≠0: tilts diagonally up (climb) or down (descent).
+  // Starts at left edge at centreY, ends at right side at VS height.
+  // Clamped at ±6000 — pointer stays at scale end.
+  const vsClamped = Math.max(-6000, Math.min(6000, vs))
+  const needleY   = vsiToY(vsClamped)
+  const rootY     = centreY + (needleY - centreY) * 0.25  // root shifts ~25% toward VS
+  const nxR       = x + tapW(rootY) - 2            // root: right edge
+  const nxL       = x + 4                          // tip: left side, VS height
 
-  // Centre line
-  ctx.strokeStyle = '#444'
-  ctx.lineWidth = 1
+  ctx.strokeStyle = '#00FF00'
+  ctx.lineWidth = 3
   ctx.beginPath()
-  ctx.moveTo(x, centreY)
-  ctx.lineTo(x + w, centreY)
+  ctx.moveTo(nxR, rootY)                           // root: outer edge, shifted toward VS
+  ctx.lineTo(nxL, needleY)                         // tip: inner side, VS height
   ctx.stroke()
 
-  // Digital FPM readout next to pointer (only when VS ≠ 0)
-  if (vs !== 0) {
-    const vsY       = centreY - vsClamp * scale
-    const labelY    = Math.max(y + 8, Math.min(y + h - 8, vsY))
-    const fpmRound  = Math.round(vs / 20) * 20
-    const fpmStr    = (vs > 0 ? '+' : '') + fpmRound
-    const boxW      = 38
-    const boxH      = 14
-    const boxX      = x - boxW - 2
-    ctx.fillStyle   = '#001a00'
-    ctx.strokeStyle = '#00CC00'
-    ctx.lineWidth   = 1
-    ctx.beginPath()
-    roundRect(ctx, boxX, labelY - boxH / 2, boxW, boxH, 2)
-    ctx.fill()
-    ctx.stroke()
-    ctx.font        = 'bold 9px monospace'
-    ctx.fillStyle   = '#00FF00'
-    ctx.textAlign   = 'right'
-    ctx.fillText(fpmStr, boxX + boxW - 3, labelY + 3)
+  // ── Digital indication (hundreds of fpm, just right of pointer tip) ──
+  // Disappears when |VS| < 200 fpm
+  if (Math.abs(vs) >= 200) {
+    const hundreds = Math.round(Math.abs(vs) / 100)
+    const lbl     = String(hundreds).padStart(2, '0')
+    const ly      = Math.max(y + 10, Math.min(y + h - 10, needleY))
+    const lx      = nxL + 12                       // just right of the tip
+    const boxW    = 22
+    const boxH    = 16
+    // Dark background box
+    ctx.fillStyle = '#000'
+    ctx.fillRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH)
+    // Green text
+    ctx.font      = 'bold 12px monospace'
+    ctx.fillStyle = '#00FF00'
+    ctx.textAlign = 'center'
+    ctx.fillText(lbl, lx, ly + 4)
   }
 }
 
