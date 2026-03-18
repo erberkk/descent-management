@@ -6,13 +6,15 @@ const H = 540
 
 // Aircraft symbol position (bottom-centre)
 const ACX = W / 2
-const ACY = H * 0.765
+const ACY = 370   // aligned with PFD speed box bottom edge
+const CRAD = 380
+const ARC_SQUASH = 290 / CRAD
 
-// px per NM
-const SCALE = 2.0
 
-// Compass arc radius (centred on aircraft)
-const CRAD = 160 * SCALE  // 160 NM, equal spacing with 40/80/120 rings
+
+
+// px per NM — derived from compass arc = 160 NM
+const SCALE = CRAD / 160  // ~2.375
 
 const toRad = (d) => (d * Math.PI) / 180
 
@@ -64,10 +66,69 @@ function render(ctx, s) {
 
   const track = s.track ?? 87
 
-  drawRangeRings(ctx, track)
+  // drawEngineGauges moved to FCU
+  // drawRangeRings(ctx, track)  — disabled
   drawCompassArc(ctx, track)
   drawAircraftSymbol(ctx)
-drawTextOverlays(ctx, s)
+  drawTextOverlays(ctx, s)
+}
+
+// ── N1 engine gauges — top centre of ND ─────────────────────────────────────
+function drawEngineGauges(ctx, n1) {
+  const n1Val = Math.max(0, Math.min(100, n1 ?? 70))
+  const cy    = 38
+  const R     = 20
+  const cx1   = W / 2 - 35    // left gauge (ENG 1)
+  const cx2   = W / 2 + 35    // right gauge (ENG 2)
+  const START = Math.PI * 0.75
+  const SWEEP = Math.PI * 1.5
+
+  for (const [cx, label] of [[cx1, 'E1'], [cx2, 'E2']]) {
+    // Background arc
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, START, START + SWEEP)
+    ctx.strokeStyle = '#2a2a2a'
+    ctx.lineWidth = 5
+    ctx.stroke()
+
+    // Tick marks at 0 / 25 / 50 / 75 / 100 %
+    ctx.lineWidth = 1
+    for (let pct = 0; pct <= 100; pct += 25) {
+      const a  = START + SWEEP * pct / 100
+      const r0 = R - 5
+      ctx.beginPath()
+      ctx.moveTo(cx + r0 * Math.cos(a), cy + r0 * Math.sin(a))
+      ctx.lineTo(cx + (R + 3) * Math.cos(a), cy + (R + 3) * Math.sin(a))
+      ctx.strokeStyle = '#555'
+      ctx.stroke()
+    }
+
+    // Value arc — green below 92 %, amber at/above 92 %
+    const arcColor = n1Val >= 92 ? '#FFA500' : '#00CC00'
+    const endAngle = START + SWEEP * n1Val / 100
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, START, endAngle)
+    ctx.strokeStyle = arcColor
+    ctx.lineWidth = 5
+    ctx.stroke()
+
+    // N1 value text
+    ctx.font = 'bold 10px monospace'
+    ctx.fillStyle = n1Val >= 92 ? '#FFA500' : '#FFFFFF'
+    ctx.textAlign = 'center'
+    ctx.fillText(n1Val.toFixed(1), cx, cy + 4)
+
+    // Engine label
+    ctx.font = '8px monospace'
+    ctx.fillStyle = '#888'
+    ctx.fillText(label, cx, cy - R - 2)
+  }
+
+  // "N1 %" label centred between the two gauges
+  ctx.font = '8px monospace'
+  ctx.fillStyle = '#AAA'
+  ctx.textAlign = 'center'
+  ctx.fillText('N1 %', W / 2, cy + 4)
 }
 
 // ── Range rings ─────────────────────────────────────────────────────────────
@@ -77,10 +138,14 @@ function drawRangeRings(ctx, track) {
   ctx.setLineDash([8, 6])
   ctx.lineWidth = 1.5
 
+  ctx.translate(ACX, ACY)
+  ctx.scale(1, ARC_SQUASH)
+  ctx.translate(-ACX, -ACY)
   for (const nm of [40, 80, 120]) {
     const r = nm * SCALE
+    const sweep = toRad(95)
     ctx.beginPath()
-    ctx.arc(ACX, ACY, r, Math.PI, 0, false)  // upper semicircle
+    ctx.arc(ACX, ACY, r, -Math.PI / 2 - sweep, -Math.PI / 2 + sweep, false)
     ctx.stroke()
   }
   ctx.setLineDash([])
@@ -176,40 +241,67 @@ function drawWaypointDiamond(ctx, x, y, name, isActive, isPassed) {
   ctx.restore()
 }
 
-// ── Compass arc ─────────────────────────────────────────────────────────────
+// ── Compass arc (ARC mode — 90° visible: ±45° from track) ───────────────────
 function drawCompassArc(ctx, track) {
-  // Draw the arc line
+  const HALF_ARC = 45   // degrees of heading data each side of track
+  // Arc line extends to display edges (wider than heading range)
+  const ARC_SWEEP = toRad(95)  // wider than display — endpoints clip higher up
+
   ctx.save()
+  // Squash vertically for flatter arcs
+  ctx.translate(ACX, ACY)
+  ctx.scale(1, ARC_SQUASH)
+  ctx.translate(-ACX, -ACY)
+
   ctx.strokeStyle = '#DDDDDD'
-  ctx.lineWidth = 2
+  ctx.lineWidth = 2 / ARC_SQUASH
   ctx.beginPath()
-  ctx.arc(ACX, ACY, CRAD, Math.PI, 0, true)
+  ctx.arc(ACX, ACY, CRAD, -Math.PI / 2 - ARC_SWEEP, -Math.PI / 2 + ARC_SWEEP, false)
   ctx.stroke()
 
-  // Tick marks and labels for all bearings visible (track ± 95°)
+  // Inner range arcs — 3 equally spaced, parallel to compass arc
+  // Sweep capped at π/2 so arcs end at aircraft Y-level (don't go below)
+  const INNER_COUNT = 3
+  const RING_STEP = CRAD / (INNER_COUNT + 1)
+  const mainEndX = CRAD * Math.sin(ARC_SWEEP)
+  ctx.strokeStyle = '#DDDDDD'
+  ctx.lineWidth = 2 / ARC_SQUASH
+  ctx.setLineDash([8, 6])
+  for (let i = 1; i <= INNER_COUNT; i++) {
+    const r = CRAD - i * RING_STEP
+    const ratio = mainEndX / r
+    const sweep = Math.min(ratio >= 1 ? Math.PI * 0.98 : Math.asin(ratio), Math.PI / 2)
+    ctx.beginPath()
+    ctx.arc(ACX, ACY, r, -Math.PI / 2 - sweep, -Math.PI / 2 + sweep, false)
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+
+  // Tick marks and labels (track ± 45°)
   for (let bear = 0; bear < 360; bear++) {
     let rel = bear - track
-    // Normalise to -180…+180
     while (rel > 180) rel -= 360
     while (rel < -180) rel += 360
 
-    if (Math.abs(rel) > 92) continue  // outside visible arc
+    if (Math.abs(rel) > HALF_ARC) continue
 
-    const angle = toRad(rel) - Math.PI / 2   // canvas angle (0 = right)
+    const angle = toRad(rel) - Math.PI / 2
     const cos = Math.cos(angle)
     const sin = Math.sin(angle)
 
-    let tickLen = 5
-    if (bear % 10 === 0) tickLen = 14
-    else if (bear % 5 === 0) tickLen = 9
+    let tickLen = 0
+    if (bear % 10 === 0) tickLen = 16
+    else if (bear % 5 === 0) tickLen = 10
+
+    if (tickLen === 0) continue
 
     const ox = ACX + CRAD * cos
     const oy = ACY + CRAD * sin
-    const ix = ACX + (CRAD - tickLen) * cos
-    const iy = ACY + (CRAD - tickLen) * sin
+    const ix = ACX + (CRAD + tickLen) * cos
+    const iy = ACY + (CRAD + tickLen) * sin
 
     ctx.strokeStyle = '#CCCCCC'
-    ctx.lineWidth = bear % 10 === 0 ? 1.5 : 1
+    ctx.lineWidth = (bear % 10 === 0 ? 2 : 1.5) / ARC_SQUASH
     ctx.beginPath()
     ctx.moveTo(ox, oy)
     ctx.lineTo(ix, iy)
@@ -217,12 +309,13 @@ function drawCompassArc(ctx, track) {
 
     if (bear % 10 === 0) {
       const label = String(bear / 10).padStart(2, '0')
-      const lx = ACX + (CRAD - 26) * cos
-      const ly = ACY + (CRAD - 26) * sin
+      const lx = ACX + (CRAD + tickLen + 14) * cos
+      const ly = ACY + (CRAD + tickLen + 14) * sin
       ctx.save()
       ctx.translate(lx, ly)
+      ctx.scale(1, 1 / ARC_SQUASH)  // undo squash for text
       ctx.rotate(angle + Math.PI / 2)
-      ctx.font = 'bold 13px monospace'
+      ctx.font = 'bold 16px monospace'
       ctx.fillStyle = '#CCCCCC'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
@@ -232,24 +325,47 @@ function drawCompassArc(ctx, track) {
   }
 
   // Heading bug – yellow line at top of arc (current track)
-  const bugAngle = -Math.PI / 2  // straight up = current track
+  const bugAngle = -Math.PI / 2
   ctx.strokeStyle = '#FFD700'
-  ctx.lineWidth = 3
+  ctx.lineWidth = 3 / ARC_SQUASH
   ctx.beginPath()
   ctx.moveTo(ACX + CRAD * Math.cos(bugAngle), ACY + CRAD * Math.sin(bugAngle))
   ctx.lineTo(ACX + (CRAD - 22) * Math.cos(bugAngle), ACY + (CRAD - 22) * Math.sin(bugAngle))
   ctx.stroke()
 
   // Small triangle marker at the top
+  ctx.save()
+  const triX = ACX
+  const triY = ACY - CRAD
+  ctx.translate(triX, triY)
+  ctx.scale(1, 1 / ARC_SQUASH)  // undo squash for triangle
   ctx.fillStyle = '#FFD700'
   ctx.beginPath()
-  ctx.moveTo(ACX, ACY - CRAD + 2)
-  ctx.lineTo(ACX - 6, ACY - CRAD + 16)
-  ctx.lineTo(ACX + 6, ACY - CRAD + 16)
+  ctx.moveTo(0, 2)
+  ctx.lineTo(-6, 16)
+  ctx.lineTo(6, 16)
   ctx.closePath()
   ctx.fill()
-
   ctx.restore()
+
+  // Cyan diamond below the yellow triangle (track marker)
+  ctx.save()
+  const dYraw = ACY - CRAD + 22
+  ctx.translate(ACX, dYraw)
+  ctx.scale(1, 1 / ARC_SQUASH)  // undo squash for diamond
+  const dS = 5
+  ctx.strokeStyle = '#00FFFF'
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  ctx.moveTo(0, -dS)
+  ctx.lineTo(dS, 0)
+  ctx.lineTo(0, dS)
+  ctx.lineTo(-dS, 0)
+  ctx.closePath()
+  ctx.stroke()
+  ctx.restore()
+
+  ctx.restore()  // undo squash transform
 }
 
 // ── Aircraft symbol (yellow cross + circle) ─────────────────────────────────

@@ -111,6 +111,8 @@ A320_T_IDLE_SL  = 12_000    # N total idle thrust at sea level (both engines)
 A320_IDLE_EXP   = 1.3       # density exponent for idle thrust lapse
 
 # Speed limits
+A320_VS_RAMP_RATE = 200.0        # FPM/s  — max VS change rate (pitch servo limit)
+A320_ACMD_RATE    = 0.10         # m/s²/s — acceleration command ramp rate (pitch lag)
 A320_VMO          = 350          # kt IAS — max operating speed
 A320_MMO          = 0.82         # Mach   — max operating Mach
 
@@ -163,8 +165,8 @@ class Aircraft:
 
         # ── PFD mode annunciator strings ─────────────────────────────────────
         self.spd_mode = "MACH"
-        self.alt_mode = "ALTCRZ"
-        self.lat_mode = "NAV"
+        self.alt_mode = "ALT CRZ"
+        self.lat_mode = "HDG"
 
         # ── AP / FD / ATHR ──────────────────────────────────────────────────
         self.ap_num = 2
@@ -199,6 +201,9 @@ class Aircraft:
         # ── Speed trend (IAS acceleration for PFD speed trend arrow) ────────
         self._prev_ias = None               # previous tick IAS for derivative
         self._ias_accel = 0.0               # smoothed IAS acceleration [kt/s]
+
+        # ── Smoothed acceleration command (pitch servo lag in OP DES/CLB) ──
+        self._a_cmd_smooth = 0.0            # m/s² — ramps toward target a_cmd
 
         # ── FCU state (mirrors the physical FCU panel) ───────────────────────
         # Speed section — standard A320 descent: M0.78 / 300 kt IAS
@@ -350,6 +355,7 @@ class Aircraft:
                     self._vs_transition_target = round(self._compute_vs(t), 1)
                 self.alt_mode = "OP CLB"
                 self._vs_managed_override = True
+                self._a_cmd_smooth = 0.0
             elif self.altitude > self.sel_alt + 50:
                 if self.alt_mode != "OP DES":
                     # Ramp VS from current value toward idle-thrust equilibrium
@@ -360,6 +366,7 @@ class Aircraft:
                     self._vs_transition_target = round(self._compute_vs(t), 1)
                 self.alt_mode = "OP DES"
                 self._vs_managed_override = True
+                self._a_cmd_smooth = 0.0
             else:
                 self.vs = 0.0
                 self.alt_mode = "ALT"
@@ -399,10 +406,10 @@ class Aircraft:
         # ── Level off (smooth deceleration, like ALT* capture) ──────────────
         if patch.get("level_off") and self.vs != 0:
             self._leveloff_capture_vs = self.vs
-            # Ramp VS to 0 at 500 FPM/sec (same rate as other transitions)
+            # Ramp VS to 0 at same pitch-rate-limited ramp
             self._vs_transition_target = 0.0
             # Coast distance: triangle area during deceleration
-            decel_sec = abs(self.vs) / 500.0
+            decel_sec = abs(self.vs) / A320_VS_RAMP_RATE
             coast_ft  = abs(self.vs) * (decel_sec / 60.0) / 2.0
             direction = 1 if self.vs > 0 else -1
             raw_target = self.altitude + direction * max(coast_ft, 50)
@@ -438,7 +445,7 @@ class Aircraft:
                 self._vs_managed_override = False
                 self._alt_capture_vs = None
                 self._vs_transition_target = None
-                self.alt_mode = "ALTCRZ" if self.phase == "CRUISE" else "ALT"
+                self.alt_mode = "ALT CRZ" if self.phase == "CRUISE" else "ALT"
 
         # ── APPR ────────────────────────────────────────────────────────────
         if "appr_armed" in patch:
@@ -460,13 +467,8 @@ class Aircraft:
         # V/S → A/THR manages speed, always show MACH or SPEED
         elif self.alt_mode == "V/S":
             self.spd_mode = "MACH" if self.fcu_mach_mode else "SPEED"
-        elif self.fcu_spd_managed:
-            self.spd_mode = "MACH" if self.fcu_mach_mode else "SPEED"
         else:
-            if self.fcu_mach_mode:
-                self.spd_mode = f".{int(self.fcu_sel_mach * 1000):03d}"
-            else:
-                self.spd_mode = f"{self.fcu_sel_spd}KT"
+            self.spd_mode = "MACH" if self.fcu_mach_mode else "SPEED"
 
     # ── Thrust helpers ─────────────────────────────────────────────────────
 
@@ -569,10 +571,10 @@ class Aircraft:
             1,
         )
 
-        # ── VS transition (gradual ramp toward target, ~500 FPM/sec) ────────
+        # ── VS transition (gradual ramp toward target, pitch-rate limited) ──
         if self._vs_transition_target is not None:
             vs_err = self._vs_transition_target - self.vs
-            max_change = 500.0 * dt          # 500 FPM per second
+            max_change = A320_VS_RAMP_RATE * dt   # ~300 FPM per second
             if abs(vs_err) <= max_change:
                 self.vs = self._vs_transition_target
                 self._vs_transition_target = None
@@ -607,6 +609,15 @@ class Aircraft:
 
             Kp    = 0.04                          # gain [1/s]
             a_cmd = max(-0.30, min(0.30, Kp * v_err))  # ±0.30 m/s² operational
+
+            # Rate-limit acceleration command (pitch servo lag)
+            a_err = a_cmd - self._a_cmd_smooth
+            max_a_chg = A320_ACMD_RATE * dt
+            if abs(a_err) <= max_a_chg:
+                self._a_cmd_smooth = a_cmd
+            else:
+                self._a_cmd_smooth += math.copysign(max_a_chg, a_err)
+            a_cmd = self._a_cmd_smooth
 
             # Safety: OP DES never climbs, OP CLB never descends
             a_limit = (thrust - D) / A320_MASS_KG
@@ -758,8 +769,17 @@ class Aircraft:
         # ── Heading: turn toward fcu_sel_hdg at 3°/second ───────────────────
         hdg_error = (self.fcu_sel_hdg - self.heading + 540) % 360 - 180
         max_turn  = 3.0 * dt
-        self.heading = (self.heading + max(-max_turn, min(max_turn, hdg_error))) % 360
+        turn_amount = max(-max_turn, min(max_turn, hdg_error))
+        self.heading = (self.heading + turn_amount) % 360
         self.track   = self.heading
+
+        # ── Bank angle from turn rate (max 15° — midpoint of 10°/20° markers) ─
+        turn_rate = turn_amount / dt if dt > 0 else 0.0     # deg/s
+        target_roll = max(-15.0, min(15.0, turn_rate * 5.0)) # ~15° at 3°/s
+        # Smooth roll transition: 5°/s roll rate
+        max_roll_change = 5.0 * dt
+        roll_error = target_roll - self.roll
+        self.roll += max(-max_roll_change, min(max_roll_change, roll_error))
 
         # ── Position ─────────────────────────────────────────────────────────
         dist_nm = (self.gs / 3600.0) * dt
@@ -816,6 +836,13 @@ class Aircraft:
         _mmo_ias = A320_MMO * _vmo_atm["sos_kt"] * math.sqrt(_vmo_atm["rho"] / _ISA_RHO0)
         _vmo_eff = min(A320_VMO, _mmo_ias)
 
+        # Target speed in IAS (for PFD speed bug)
+        if self.fcu_mach_mode:
+            _tgt_tas = self.fcu_sel_mach * _vmo_atm["sos_kt"]
+            _tgt_ias = round(_tgt_tas * math.sqrt(_vmo_atm["rho"] / _ISA_RHO0))
+        else:
+            _tgt_ias = self.fcu_sel_spd
+
         return {
             # ── Aircraft state ──────────────────────────────────────────────
             "lat": round(self.lat, 5),
@@ -823,6 +850,7 @@ class Aircraft:
             "altitude": round(self.altitude),
             "sel_alt":  int(self.sel_alt),
             "vmo":          round(_vmo_eff),
+            "target_spd_ias": _tgt_ias,
             "vls":          A320_VLS,
             "alpha_prot":   A320_ALPHA_PROT,
             "alpha_max":    A320_ALPHA_MAX,

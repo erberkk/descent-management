@@ -517,3 +517,32 @@
 }
 .fcu-spd-mach-btn:hover  { background: linear-gradient(180deg, #343e4c 0%, #283240 100%); }
 .fcu-spd-mach-btn:active { background: linear-gradient(180deg, #1e2830 0%, #2a3440 100%); }
+
+/* ── Engine N1 gauges (FCU right side) ─────────────────────────────────── */
+.fcu-eng-gauges {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.fcu-eng-title {
+  font-size: 8px;
+  color: #AAA;
+  letter-spacing: 1px;
+  font-family: 'Courier New', monospace;
+}
+.fcu-eng-row {
+  display: flex;
+  gap: 4px;
+}
+.fcu-eng-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.fcu-eng-label {
+  font-size: 8px;
+  color: #888;
+  font-family: 'Courier New', monospace;
+  margin-bottom: -2px;
+}

@@ -120,6 +120,66 @@ function Divider() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Engine N1 Gauge (SVG arc gauge)
+// ═══════════════════════════════════════════════════════════════════════════
+function EngineGauge({ label, n1 }) {
+  const val = Math.max(0, Math.min(100, n1))
+  const color = val >= 92 ? '#FFA500' : '#00CC00'
+  // SVG arc parameters
+  const cx = 28, cy = 28, r = 20
+  const startAngle = 135, sweepTotal = 270
+  const toRad = (d) => (d * Math.PI) / 180
+  const arcPoint = (angle) => ({
+    x: cx + r * Math.cos(toRad(angle)),
+    y: cy + r * Math.sin(toRad(angle)),
+  })
+  const endAngle = startAngle + sweepTotal * val / 100
+  const bgEnd = arcPoint(startAngle + sweepTotal)
+  const bgStart = arcPoint(startAngle)
+  const valEnd = arcPoint(endAngle)
+  const bgLargeArc = sweepTotal > 180 ? 1 : 0
+  const valSweep = sweepTotal * val / 100
+  const valLargeArc = valSweep > 180 ? 1 : 0
+
+  return (
+    <div className="fcu-eng-gauge">
+      <div className="fcu-eng-label">{label}</div>
+      <svg width="56" height="56" viewBox="0 0 56 56">
+        {/* Background arc */}
+        <path
+          d={`M ${bgStart.x} ${bgStart.y} A ${r} ${r} 0 ${bgLargeArc} 1 ${bgEnd.x} ${bgEnd.y}`}
+          fill="none" stroke="#2a2a2a" strokeWidth="4" strokeLinecap="round"
+        />
+        {/* Value arc */}
+        {val > 0 && (
+          <path
+            d={`M ${bgStart.x} ${bgStart.y} A ${r} ${r} 0 ${valLargeArc} 1 ${valEnd.x} ${valEnd.y}`}
+            fill="none" stroke={color} strokeWidth="4" strokeLinecap="round"
+          />
+        )}
+        {/* N1 value */}
+        <text x={cx} y={cy + 4} textAnchor="middle" fill={val >= 92 ? '#FFA500' : '#FFF'}
+              fontSize="10" fontWeight="bold" fontFamily="'Courier New', monospace">
+          {val.toFixed(1)}
+        </text>
+      </svg>
+    </div>
+  )
+}
+
+function EngineGauges({ n1 }) {
+  return (
+    <div className="fcu-eng-gauges">
+      <div className="fcu-eng-title">N1 %</div>
+      <div className="fcu-eng-row">
+        <EngineGauge label="E1" n1={n1} />
+        <EngineGauge label="E2" n1={n1} />
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // FCU MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
 export function FCU({ fcu, patch, state }) {
@@ -329,6 +389,11 @@ export function FCU({ fcu, patch, state }) {
             <div className="fcu-knob-label">V/S</div>
           </div>
         </div>
+
+        <Divider />
+
+        {/* ── ENGINE N1 GAUGES ── */}
+        <EngineGauges n1={state?.n1 ?? 70} />
 
       </div>{/* end controls strip */}
     </div>

@@ -44,7 +44,11 @@
       "WebFetch(domain:blog.thea320insider.com)",
       "WebFetch(domain:safetyfirst.airbus.com)",
       "WebFetch(domain:www.aviationhunt.com)",
-      "WebFetch(domain:www.pprune.org)"
+      "WebFetch(domain:www.pprune.org)",
+      "Bash(npx vite:*)",
+      "Bash(rm -rf node_modules)",
+      "Bash(npm install:*)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\\\\\Users\\\\\\\\kivra\\\\\\\\OneDrive\\\\\\\\Masaüstü\\\\\\\\descent-management\\\\\\\\frontend && rmdir /s /q node_modules\" 2>&1)"
     ]
   }
 }
