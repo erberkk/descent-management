@@ -5,6 +5,8 @@ const DEFAULTS = {
   fcu_mach_mode:    true,
   fcu_sel_mach:     0.78,
   fcu_sel_spd:      300,
+  flap_lever:       0,
+  spd_brk_lever:    0,
   fcu_hdg_managed:  true,
   fcu_hdg_trk_mode: 'HDG',
   fcu_vs_fpa_mode:  'V/S',
@@ -49,6 +51,8 @@ export function useFCU() {
       athr_engaged:     ws.athr_engaged     ?? DEFAULTS.athr_engaged,
       loc_armed:        ws.loc_armed        ?? DEFAULTS.loc_armed,
       appr_armed:       ws.appr_armed       ?? DEFAULTS.appr_armed,
+      flap_lever:       ws.flap_lever       ?? DEFAULTS.flap_lever,
+      spd_brk_lever:    ws.spd_brk_lever    ?? DEFAULTS.spd_brk_lever,
     })
   }, [])
 

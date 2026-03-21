@@ -35,8 +35,8 @@ const SPD_PX_MACH = 280   // total tape width for Mach 0…1.2
 // Default state for initial render
 const DEFAULT = {
   pitch: 2.5, roll: 0,
-  altitude: 27000, sel_alt: 27000, vs: 0,
-  mach: 0.788, tas: 465, ias: 304, gs: 445,
+  altitude: 35000, sel_alt: 35000, vs: 0,
+  mach: 0.78, tas: 465, ias: 304, gs: 465,
   spd_mode: 'MACH', alt_mode: 'ALT CRZ', lat_mode: 'HDG',
   ap_num: 2, fd1: true, fd2: true, athr: true,
   baro_std: true, baro_value: 1013.25,
@@ -123,7 +123,7 @@ function render(ctx, s, selAlt, selVs, squareY) {
   ctx.fillRect(0, 0, W, H)
 
   drawFMA(ctx, s, selVs)
-  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.788, s.vmo ?? 350, s.vls ?? 201, s.alpha_prot ?? 177, s.alpha_max ?? 162, s.spd_trend ?? 0, s.target_spd_ias ?? s.ias ?? 304)
+  drawLeftBox(ctx, s.ias ?? s.actual_spd ?? 304, s.mach ?? 0.78, s.vmo ?? 350, s.vls ?? 201, s.alpha_prot ?? 177, s.alpha_max ?? 162, s.spd_trend ?? 0, s.target_spd_ias ?? s.ias ?? 304, s.flap_conf ?? 'CONF 0', s.gd_speed ?? 215, s.s_speed ?? 185, s.f_speed ?? 155, (s.altitude ?? 35000) <= 20000 ? s.vfe_next : null)
   drawAttitudeIndicator(ctx, s.pitch ?? 2.5, s.roll ?? 0)
   // drawBankArc(ctx)  — disabled, will be rebuilt
   drawAircraftSymbol(ctx, squareY ?? REF_CY)
@@ -131,6 +131,7 @@ function render(ctx, s, selAlt, selVs, squareY) {
   drawAltitudeTape(ctx, s.altitude ?? 27000, selAlt ?? s.sel_alt ?? 36000, s.vs ?? 0, s.alt_mode ?? 'ALT CRZ')
   drawHeadingTape(ctx, s.heading ?? 87)
   drawBaroIndicator(ctx, s.baro_std, s.baro_value)
+
 }
 
 // ── FMA — Flight Mode Annunciator (5-column A320 layout) ────────────────────
@@ -270,7 +271,14 @@ function drawFMA(ctx, s, selVs) {
     drawFmaBox(ctx, CX[2], modeY, latMode.replace('*', ''), 'bold 16px monospace')
   }
 
-  // ── Col 3 — Approach capability (empty for now) ───────────────────────────
+  // ── Col 3 — ECAM memo (speed brake, flap config, etc.) ───────────────────
+  const sbrk = s.spd_brk_actual ?? 0
+  if (sbrk > 0.01) {
+    ctx.font = 'bold 14px monospace'
+    ctx.fillStyle = '#00FF00'
+    ctx.textAlign = 'center'
+    ctx.fillText('SPD BRK', CX[3], modeY)
+  }
 
   // ── Col 4 — AP / FD / A-THR engagement ────────────────────────────────────
   ctx.textAlign = 'left'
@@ -841,7 +849,7 @@ function drawAltitudeTape(ctx, altitude, selAlt, vs, altMode) {
 }
 
 // ── Left speed tape (IAS) + Mach readout ─────────────────────────────────────
-function drawLeftBox(ctx, ias, mach, vmo, vls, alphaProt, alphaMax, spdTrend, targetIas) {
+function drawLeftBox(ctx, ias, mach, vmo, vls, alphaProt, alphaMax, spdTrend, targetIas, flapConf, gdSpeed, sSpeed, fSpeed, vfeNext) {
   const x = LB_X
   const y = AI_Y
   const w = LB_W
@@ -957,6 +965,24 @@ function drawLeftBox(ctx, ias, mach, vmo, vls, alphaProt, alphaMax, spdTrend, ta
     ctx.restore()
   }
 
+  // ── VFE next marker (amber tick at the next flap config's VFE) ──────
+  if (vfeNext != null) {
+    const vfeYm = centreY - (vfeNext - ias) * pxPerKt
+    if (vfeYm >= y && vfeYm <= y + h) {
+      ctx.strokeStyle = '#FF8C00'
+      ctx.lineWidth = 2.5
+      ctx.beginPath()
+      ctx.moveTo(x + w + 1, vfeYm)
+      ctx.lineTo(x + w + AI_GAP - 4, vfeYm)
+      ctx.stroke()
+      // Small downward notch
+      ctx.beginPath()
+      ctx.moveTo(x + w + 1, vfeYm)
+      ctx.lineTo(x + w + 1, vfeYm + 6)
+      ctx.stroke()
+    }
+  }
+
   // ── VLS → Alpha Prot: solid amber strip ──────────────────────────────
   // ── Alpha Prot → Alpha Max: amber squares (barber pole) ────────────
   const vlsY   = centreY - (vls - ias) * pxPerKt
@@ -1043,6 +1069,40 @@ function drawLeftBox(ctx, ias, mach, vmo, vls, alphaProt, alphaMax, spdTrend, ta
   ctx.moveTo(x + w, centreY)
   ctx.lineTo(x + w - 14, centreY)          // extends past long ticks (~12px)
   ctx.stroke()
+
+  // ── Characteristic speed markers (GD, S, F) ─────────────────────────────
+  const markerX = x + w + 10
+
+  // Green Dot — only in clean config
+  if (flapConf === 'CONF 0' && gdSpeed) {
+    const gdY = centreY - (gdSpeed - ias) * pxPerKt
+    if (gdY >= y && gdY <= y + h) {
+      ctx.fillStyle = '#00FF00'
+      ctx.beginPath()
+      ctx.arc(markerX, gdY, 3.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  // S speed — in CONF 1 / 1+F
+  if ((flapConf === 'CONF 1' || flapConf === 'CONF 1+F') && sSpeed) {
+    const sY = centreY - (sSpeed - ias) * pxPerKt
+    if (sY >= y && sY <= y + h) {
+      ctx.font = 'bold 13px monospace'
+      ctx.fillStyle = '#00FF00'
+      ctx.textAlign = 'center'
+      ctx.fillText('S', markerX, sY + 4)
+    }
+  }
+
+
+  // ── Flap config indicator (below Mach readout) ─────────────────────────
+  if (flapConf && flapConf !== 'CONF 0') {
+    ctx.font = 'bold 12px monospace'
+    ctx.fillStyle = '#00BFFF'
+    ctx.textAlign = 'left'
+    ctx.fillText(flapConf, x, y + h + 38)
+  }
 }
 
 function drawVSI(ctx, vs, x, y) {

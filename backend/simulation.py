@@ -131,6 +131,48 @@ A320_ALPHA_MAX    = round(A320_VS1G_IAS * 1.03)             # ≈ 162 kt IAS
 A320_CROSSOVER_FT = _crossover_ft(0.78, 300)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# A320 Flap/Slat Configuration Table
+# ═══════════════════════════════════════════════════════════════════════════════
+A320_FLAP_TABLE = [
+    {"name": "CONF 0",    "slat": 0,  "flap": 0,  "vfe": 350, "dcd0": 0.000, "cl_max": 1.30},
+    {"name": "CONF 1",    "slat": 18, "flap": 0,  "vfe": 230, "dcd0": 0.010, "cl_max": 1.60},
+    {"name": "CONF 1+F",  "slat": 18, "flap": 10, "vfe": 215, "dcd0": 0.025, "cl_max": 1.85},
+    {"name": "CONF 2",    "slat": 22, "flap": 15, "vfe": 200, "dcd0": 0.040, "cl_max": 2.10},
+    {"name": "CONF 3",    "slat": 22, "flap": 20, "vfe": 185, "dcd0": 0.060, "cl_max": 2.40},
+    {"name": "CONF FULL", "slat": 27, "flap": 35, "vfe": 177, "dcd0": 0.085, "cl_max": 2.70},
+]
+
+# Precompute VLS, Vs1g, alpha speeds for each configuration
+for _cfg in A320_FLAP_TABLE:
+    _vs1g_ms = math.sqrt(2 * A320_MASS_KG * A320_G / (_ISA_RHO0 * A320_WING_S * _cfg["cl_max"]))
+    _vs1g_kt = _vs1g_ms * 1.94384
+    _vls_f = 1.28 if _cfg["name"] == "CONF 0" else 1.23
+    _cfg["vs1g"]       = round(_vs1g_kt, 1)
+    _cfg["vls"]        = round(_vs1g_kt * _vls_f)
+    _cfg["alpha_prot"] = round(_vs1g_kt * 1.13)
+    _cfg["alpha_max"]  = round(_vs1g_kt * 1.03)
+
+# Flap/slat transition rates
+A320_SLAT_RATE = 4.0    # deg/s
+A320_FLAP_RATE = 3.5    # deg/s
+
+# CONF 1 vs 1+F auto-transition threshold
+A320_CONF1F_THRESHOLD = 210  # kt IAS
+
+# Characteristic speeds (65,000 kg)
+A320_GD_SPEED = round(2 * (A320_MASS_KG / 1000) + 85)   # ≈ 215 kt (Green Dot)
+A320_S_SPEED  = round(A320_MASS_KG / 1000 + 120)        # ≈ 185 kt (slat retract speed)
+A320_F_SPEED  = round(A320_MASS_KG / 1000 + 90)         # ≈ 155 kt (flap retract speed)
+
+# VFE per lever position (structural limit — independent of CONF 1 vs 1+F)
+A320_LEVER_VFE = {0: 350, 1: 230, 2: 200, 3: 185, 4: 177}
+
+# Speed brake
+A320_SPD_BRK_CD0  = 0.050     # ΔCD0 at full speed brake deployment
+A320_SPD_BRK_RATE = 0.7       # deployment rate [1/s] (~1.4 s full travel)
+
+
 class Aircraft:
     def __init__(self):
         # ── Position ────────────────────────────────────────────────────────
@@ -197,6 +239,16 @@ class Aircraft:
         self._leveloff_capture_vs = None    # VS at moment level-off was pressed
         self._alt_capture_vs      = None    # VS at moment of entering capture zone
         self._vs_transition_target = None   # Gradual VS transition target (FPM)
+
+        # ── Flap / Slat ───────────────────────────────────────────────────────
+        self.flap_lever      = 0       # lever position: 0, 1, 2, 3, 4 (FULL)
+        self.flap_conf_index = 0       # index into A320_FLAP_TABLE
+        self.slat_angle      = 0.0     # actual slat angle [deg]
+        self.flap_angle      = 0.0     # actual flap angle [deg]
+
+        # ── Speed Brake ───────────────────────────────────────────────────────
+        self.spd_brk_lever   = 0.0     # commanded: 0.0, 0.25, 0.50, 0.75, 1.0
+        self.spd_brk_actual  = 0.0     # actual deployment (transitions gradually)
 
         # ── Speed trend (IAS acceleration for PFD speed trend arrow) ────────
         self._prev_ias = None               # previous tick IAS for derivative
@@ -453,6 +505,14 @@ class Aircraft:
             if self.appr_armed:
                 self.alt_mode = "G/S*"
 
+        # ── Flap lever ─────────────────────────────────────────────────────
+        if "flap_lever" in patch:
+            self.flap_lever = max(0, min(4, int(patch["flap_lever"])))
+
+        # ── Speed brake lever ──────────────────────────────────────────────
+        if "spd_brk_lever" in patch:
+            self.spd_brk_lever = max(0.0, min(1.0, float(patch["spd_brk_lever"])))
+
     # ──────────────────────────────────────────────────────────────────────
     def _dynamic_crossover(self) -> float:
         return _crossover_ft(self.fcu_sel_mach, self.fcu_sel_spd)
@@ -481,7 +541,11 @@ class Aircraft:
         # Altitude-dependent CD0 (Reynolds / compressibility correction)
         alt_kft = self.altitude / 1000.0
         cd0_alt = A320_CD0_ALT_K * max(0.0, alt_kft - A320_CD0_ALT_REF) ** A320_CD0_ALT_POW / A320_CD0_ALT_NORM if alt_kft > A320_CD0_ALT_REF else 0.0
-        cd0_eff = A320_CD0 + cd0_alt
+        # Flap/slat drag increment (proportional to actual deployment angle)
+        cd0_flap = self.slat_angle * (0.015 / 27.0) + self.flap_angle * (0.070 / 35.0)
+        # Speed brake drag increment
+        cd0_sbrk = self.spd_brk_actual * A320_SPD_BRK_CD0
+        cd0_eff = A320_CD0 + cd0_alt + cd0_flap + cd0_sbrk
         CD   = cd0_eff + CL ** 2 / (math.pi * A320_AR * A320_OSWALD)
         return q * A320_WING_S * CD
 
@@ -538,6 +602,41 @@ class Aircraft:
     # ──────────────────────────────────────────────────────────────────────
     def update(self, dt: float):
         self.sim_time += dt
+
+        # ── Flap/Slat configuration & transition ──────────────────────────
+        if self.flap_lever == 0:
+            _tgt_conf = 0
+        elif self.flap_lever == 1:
+            _tgt_conf = 1 if self.ias > A320_CONF1F_THRESHOLD else 2
+        elif self.flap_lever == 2:
+            _tgt_conf = 3
+        elif self.flap_lever == 3:
+            _tgt_conf = 4
+        else:
+            _tgt_conf = 5
+        self.flap_conf_index = _tgt_conf
+        _fcfg = A320_FLAP_TABLE[_tgt_conf]
+
+        # Gradual angle transition (slats and flaps move at realistic rates)
+        for _attr, _target, _rate in [
+            ("slat_angle", float(_fcfg["slat"]), A320_SLAT_RATE),
+            ("flap_angle", float(_fcfg["flap"]), A320_FLAP_RATE),
+        ]:
+            _cur = getattr(self, _attr)
+            _err = _target - _cur
+            _max = _rate * dt
+            if abs(_err) <= _max:
+                setattr(self, _attr, _target)
+            else:
+                setattr(self, _attr, _cur + math.copysign(_max, _err))
+
+        # ── Speed brake transition ────────────────────────────────────────
+        _sb_err = self.spd_brk_lever - self.spd_brk_actual
+        _sb_max = A320_SPD_BRK_RATE * dt
+        if abs(_sb_err) <= _sb_max:
+            self.spd_brk_actual = self.spd_brk_lever
+        else:
+            self.spd_brk_actual += math.copysign(_sb_max, _sb_err)
 
         # ── Phase transitions (driven by altitude, not timers) ──────────────
         if not self._vs_managed_override:
@@ -831,10 +930,14 @@ class Aircraft:
                 "is_airport": True, "is_active": False, "is_passed": False,
             })
 
-        # Effective VMO: lower of VMO and MMO-equivalent IAS at current altitude
+        # Current flap configuration
+        _flap_cfg = A320_FLAP_TABLE[self.flap_conf_index]
+
+        # Effective VMO: lower of VMO, MMO-equivalent IAS, and lever VFE
         _vmo_atm = isa_atmosphere(self.altitude)
         _mmo_ias = A320_MMO * _vmo_atm["sos_kt"] * math.sqrt(_vmo_atm["rho"] / _ISA_RHO0)
-        _vmo_eff = min(A320_VMO, _mmo_ias)
+        _lever_vfe = A320_LEVER_VFE[self.flap_lever]
+        _vmo_eff = min(A320_VMO, _mmo_ias, _lever_vfe)
 
         # Target speed in IAS (for PFD speed bug)
         if self.fcu_mach_mode:
@@ -851,9 +954,9 @@ class Aircraft:
             "sel_alt":  int(self.sel_alt),
             "vmo":          round(_vmo_eff),
             "target_spd_ias": _tgt_ias,
-            "vls":          A320_VLS,
-            "alpha_prot":   A320_ALPHA_PROT,
-            "alpha_max":    A320_ALPHA_MAX,
+            "vls":          _flap_cfg["vls"],
+            "alpha_prot":   _flap_cfg["alpha_prot"],
+            "alpha_max":    _flap_cfg["alpha_max"],
             "mach":         round(self.mach, 3),
             "tas":          round(self.tas),
             "ias":          round(self.ias),
@@ -867,6 +970,19 @@ class Aircraft:
             "track":    round(self.track, 1),
             "vs":       round(self.vs),
             "n1":       round(self.n1, 1),
+            # ── Flap/Slat ────────────────────────────────────────────────
+            "flap_lever":    self.flap_lever,
+            "flap_conf":     _flap_cfg["name"],
+            "slat_angle":    round(self.slat_angle, 1),
+            "flap_angle":    round(self.flap_angle, 1),
+            "vfe":           _flap_cfg["vfe"],
+            "vfe_next":      {0: 230, 1: 200, 2: 185, 3: 177}.get(self.flap_lever),
+            "gd_speed":      A320_GD_SPEED,
+            "s_speed":       A320_S_SPEED,
+            "f_speed":       A320_F_SPEED,
+            # ── Speed Brake ──────────────────────────────────────────────
+            "spd_brk_lever":  self.spd_brk_lever,
+            "spd_brk_actual": round(self.spd_brk_actual, 2),
             "wind_dir": round(self.wind_dir),
             "wind_speed": round(self.wind_speed),
             # ── AP / mode strings (read by PFD) ────────────────────────────

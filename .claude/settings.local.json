@@ -48,7 +48,8 @@
       "Bash(npx vite:*)",
       "Bash(rm -rf node_modules)",
       "Bash(npm install:*)",
-      "Bash(cmd.exe /c \"cd /d C:\\\\\\\\Users\\\\\\\\kivra\\\\\\\\OneDrive\\\\\\\\Masaüstü\\\\\\\\descent-management\\\\\\\\frontend && rmdir /s /q node_modules\" 2>&1)"
+      "Bash(cmd.exe /c \"cd /d C:\\\\\\\\Users\\\\\\\\kivra\\\\\\\\OneDrive\\\\\\\\Masaüstü\\\\\\\\descent-management\\\\\\\\frontend && rmdir /s /q node_modules\" 2>&1)",
+      "Bash(python3:*)"
     ]
   }
 }

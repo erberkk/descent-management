@@ -392,8 +392,64 @@ export function FCU({ fcu, patch, state }) {
 
         <Divider />
 
+        {/* ── SPEED BRAKE ── */}
+        <div className="fcu-section sbrk-section">
+          <div className="fcu-knob-col">
+            <div className="fcu-sbrk-value">
+              {Math.round((fcu.spd_brk_lever ?? 0) * 100)}%
+            </div>
+            <div className="fcu-sbrk-track">
+              {[1.0, 0.75, 0.50, 0.25, 0.0].map(pos => (
+                <button
+                  key={pos}
+                  className={`fcu-sbrk-pos ${(fcu.spd_brk_lever ?? 0) === pos ? 'active' : ''}`}
+                  onClick={() => patch({ spd_brk_lever: pos })}
+                >
+                  {pos === 0 ? 'RET' : Math.round(pos * 100)}
+                </button>
+              ))}
+            </div>
+            <div className="fcu-knob-label">SPD BRK</div>
+          </div>
+        </div>
+
+        <Divider />
+
         {/* ── ENGINE N1 GAUGES ── */}
         <EngineGauges n1={state?.n1 ?? 70} />
+
+        <Divider />
+
+        {/* ── FLAP LEVER ── */}
+        <div className="fcu-section flap-section">
+          <div className="fcu-knob-col">
+            <div className="fcu-flap-conf">
+              {state?.flap_conf ?? 'CONF 0'}
+            </div>
+            <div className="fcu-flap-lever-track">
+              {[0, 1, 2, 3, 4].map(pos => (
+                <button
+                  key={pos}
+                  className={`fcu-flap-pos ${(fcu.flap_lever ?? 0) === pos ? 'active' : ''}`}
+                  onClick={() => patch({ flap_lever: pos })}
+                >
+                  {pos === 4 ? 'F' : pos}
+                </button>
+              ))}
+            </div>
+            <div className="fcu-flap-btn-row">
+              <button className="fcu-mode-btn" onClick={() => {
+                const cur = fcu.flap_lever ?? 0
+                if (cur > 0) patch({ flap_lever: cur - 1 })
+              }}>▲ UP</button>
+              <button className="fcu-mode-btn" onClick={() => {
+                const cur = fcu.flap_lever ?? 0
+                if (cur < 4) patch({ flap_lever: cur + 1 })
+              }}>▼ DN</button>
+            </div>
+            <div className="fcu-knob-label">FLAPS</div>
+          </div>
+        </div>
 
       </div>{/* end controls strip */}
     </div>
